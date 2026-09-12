@@ -133,6 +133,7 @@ function ChromeButton({ active, children, onClick, title, style = {}, disabled }
   return (
     <button type="button" title={title} onClick={onClick} disabled={disabled}
       onPointerDown={() => setDown(true)} onPointerUp={() => setDown(false)} onPointerLeave={() => setDown(false)}
+      onMouseUp={(e) => e.currentTarget.blur()}
       style={{
         background: active ? "#C4BFAE" : C.chrome, color: disabled ? "#8C8878" : C.ink,
         font: "12px/1.1 Tahoma, Verdana, system-ui, sans-serif", padding: "4px 9px",
@@ -341,6 +342,7 @@ export default function CQBSelo() {
   const [ghost, setGhost] = useState(null);
   const [bg, setBg] = useState(null);
   const [history, setHistory] = useState([]);
+  const [tablesOpen, setTablesOpen] = useState(true);
 
   const wrapRef = useRef(null), svgRef = useRef(null);
   const fileRef = useRef(null), imgRef = useRef(null);
@@ -581,22 +583,37 @@ export default function CQBSelo() {
 
   useEffect(() => { fitView(); /* eslint-disable-next-line */ }, [boxSize.w, boxSize.h]);
 
+  /* Горячие клавиши. Слушаем code (физическую клавишу), а не key,
+     иначе русская раскладка ломает H/V/Z. Фаза capture — чтобы
+     фокус на кнопке тулбара не перехватывал пробел и стрелки. */
   useEffect(() => {
     const onKey = (e) => {
-      if (["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
-      if (e.key === "Delete" || e.key === "Backspace") {
+      const tag = e.target && e.target.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      const code = e.code || "";
+
+      if (code === "Delete" || code === "Backspace") {
+        e.preventDefault();
         if (selected) { pushHistory(); setObjects((m) => { const c = { ...m }; delete c[selected]; return c; }); setSelected(null); }
         else if (selZone) { pushHistory(); setZones((m) => { const c = { ...m }; delete c[selZone]; return c; }); setSelZone(null); }
+        return;
       }
-      if (e.key === "h" || e.key === "H" || e.key === "р" || e.key === "Р") setTool("wallH");
-      if (e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М") setTool("wallV");
-      if (e.key === " ") { e.preventDefault(); setTool("pan"); }
-      if (e.key === "Escape") { setTool("select"); setSelected(null); setSelZone(null); setOpenMenu(null); setDialog(null); setPending(null); }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); undo(); }
+      if ((e.ctrlKey || e.metaKey) && code === "KeyZ") { e.preventDefault(); undo(); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (code === "KeyH") { e.preventDefault(); setTool("wallH"); setStatus("Инструмент: горизонтальная стена"); }
+      else if (code === "KeyV") { e.preventDefault(); setTool("wallV"); setStatus("Инструмент: вертикальная стена"); }
+      else if (code === "KeyS") { e.preventDefault(); setTool("select"); setStatus("Инструмент: выделить и двигать"); }
+      else if (code === "KeyZ") { e.preventDefault(); setTool("zone"); setDialog("zonekind"); }
+      else if (code === "KeyD") { e.preventDefault(); setTool("delete"); setStatus("Инструмент: удалить"); }
+      else if (code === "KeyF") { e.preventDefault(); fitView(); }
+      else if (code === "KeyG") { e.preventDefault(); setShowGrid((g) => !g); }
+      else if (code === "Space") { e.preventDefault(); setTool("pan"); setStatus("Инструмент: панорама"); }
+      else if (code === "Escape") { setTool("select"); setSelected(null); setSelZone(null); setOpenMenu(null); setDialog(null); setPending(null); }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected, selZone, pushHistory, undo]);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [selected, selZone, pushHistory, undo, fitView]);
 
   const saveMap = () => {
     const data = JSON.stringify({ v: 2, field, objects, zones, price, bg }, null, 1);
@@ -723,7 +740,7 @@ export default function CQBSelo() {
   const bgH = bg ? bg.w / bg.aspect : 0;
 
   return (
-    <div style={{ ...ui, background: C.chrome, width: "100%", minHeight: "100vh", display: "flex", flexDirection: "column", userSelect: "none" }}
+    <div style={{ ...ui, background: C.chrome, width: "100%", height: "100vh", overflow: "hidden", display: "flex", flexDirection: "column", userSelect: "none" }}
       onPointerDown={() => setOpenMenu(null)}>
 
       {/* ВЕРХ */}
@@ -760,10 +777,11 @@ export default function CQBSelo() {
       </div>
 
       {/* РАБОЧАЯ ОБЛАСТЬ */}
-      <div style={{ display: "flex", flex: 1, minHeight: 540 }}>
-        <div style={{ width: 196, borderRight: `2px solid ${C.chromeLo}`, padding: 6, display: "flex", flexDirection: "column", gap: 4, overflowY: "auto", maxHeight: "calc(100vh - 96px)" }}>
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        <div style={{ width: 196, flexShrink: 0, borderRight: `2px solid ${C.chromeLo}`, padding: 6, display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
           {TOOLS.map(([k, label]) => (
-            <button key={k} type="button" onClick={() => { setTool(k); if (k === "zone") setDialog("zonekind"); }}
+            <button key={k} type="button" onMouseUp={(e) => e.currentTarget.blur()}
+              onClick={() => { setTool(k); if (k === "zone") setDialog("zonekind"); }}
               style={{
                 display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer",
                 background: tool === k ? "#C0CBE0" : C.chrome, textAlign: "left", ...ui,
@@ -810,12 +828,14 @@ export default function CQBSelo() {
               <PanelTitle>ПОДЛОЖКА</PanelTitle>
               <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
                 <div style={{ fontSize: 10.5, opacity: 0.8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bg.name}</div>
-                <div style={{ fontSize: 11 }}>Прозрачность: {Math.round(bg.opacity * 100)}%</div>
-                <input type="range" min={0} max={100} value={Math.round(bg.opacity * 100)}
-                  onChange={(e) => setBg((b) => ({ ...b, opacity: +e.target.value / 100 }))} style={{ width: "100%" }} />
-                <Row label="Ширина, м"><NumIn value={bg.w} min={1} max={400} step={0.5} onChange={(v) => setBg((b) => ({ ...b, w: v }))} /></Row>
-                <Row label="X, м"><NumIn value={bg.x} step={0.5} onChange={(v) => setBg((b) => ({ ...b, x: v }))} /></Row>
-                <Row label="Y, м"><NumIn value={bg.y} step={0.5} onChange={(v) => setBg((b) => ({ ...b, y: v }))} /></Row>
+                <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
+                  onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
+                <BgSlider label="Ширина" unit=" м" value={bg.w} min={2} max={Math.max(200, field.w * 3)} step={1}
+                  onChange={(v) => setBg((b) => ({ ...b, w: v }))} />
+                <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-field.w} max={field.w * 2} step={1}
+                  onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
+                <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-field.h} max={field.h * 2} step={1}
+                  onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
                 <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
                   <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />Закрепить
                 </label>
@@ -949,7 +969,7 @@ export default function CQBSelo() {
         </div>
 
         {/* ПРАВАЯ ПАНЕЛЬ */}
-        <div style={{ width: 236, display: "flex", flexDirection: "column", overflowY: "auto", maxHeight: "calc(100vh - 96px)" }}>
+        <div style={{ width: 236, flexShrink: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}>
           <PanelTitle>БИБЛИОТЕКА ОБЪЕКТОВ</PanelTitle>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, padding: 5 }}>
             {Object.keys(ASSETS).map((k) => {
@@ -1026,16 +1046,24 @@ export default function CQBSelo() {
             : zsel ? `Зона: ${zsel.n} — ${r1(zsel.w)} × ${r1(zsel.h)} м` : status}
         </StatusCell>
         <StatusCell w={168}><b>Всего тюков: {stats.totalBales}</b></StatusCell>
-        <StatusCell w={185}>Длина стен: {r1(stats.totalLen)} м</StatusCell>
+        <StatusCell w={175}>Длина стен: {r1(stats.totalLen)} м</StatusCell>
+        <div style={{ display: "flex", alignItems: "center", padding: "0 5px", background: C.chrome, borderLeft: `1px solid ${C.chromeHi}` }}>
+          <ChromeButton style={{ padding: "1px 8px" }} onClick={() => setTablesOpen((o) => !o)}>
+            {tablesOpen ? "Скрыть расчёт ▾" : "Показать расчёт ▴"}
+          </ChromeButton>
+        </div>
       </div>
 
       {/* ТАБЛИЦЫ */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: 8, alignItems: "flex-start" }}>
-        <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 430, flex: "1 1 430px" }}>
+      <div style={{
+        display: tablesOpen ? "flex" : "none", gap: 8, padding: 8, alignItems: "stretch",
+        height: 208, flexShrink: 0, overflow: "hidden",
+      }}>
+        <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 400, flex: "1 1 400px", display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ background: C.chromeDk, font: "bold 11px Tahoma, sans-serif", padding: "4px 8px", letterSpacing: ".05em" }}>
-            РАСЧЁТ КОЛИЧЕСТВА ТЮКОВ · тюк {BALE_L} × {BALE_T} м
+            РАСЧЁТ КОЛИЧЕСТВА ТЮКОВ · размер тюка {BALE_L} × {BALE_T} м
           </div>
-          <div style={{ maxHeight: 190, overflowY: "auto" }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
               <thead><tr style={{ background: "#EDEBE2" }}>
                 <Th>Тип секции</Th><Th right>Секций</Th><Th right>Ярусов</Th><Th right>Тюков в секции</Th><Th right>Всего</Th>
@@ -1062,9 +1090,9 @@ export default function CQBSelo() {
           </div>
         </Bevel>
 
-        <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 360, flex: "1 1 360px" }}>
+        <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 360, flex: "1 1 360px", display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ background: C.chromeDk, font: "bold 11px Tahoma, sans-serif", padding: "4px 8px", letterSpacing: ".05em" }}>ЗОНЫ И СЧЁТ</div>
-          <div style={{ maxHeight: 190, overflowY: "auto" }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
               <thead><tr style={{ background: "#EDEBE2" }}>
                 <Th>Название</Th><Th>Тип</Th><Th right>A / B</Th><Th right>Очки</Th><Th />
@@ -1169,11 +1197,14 @@ export default function CQBSelo() {
         <Modal title="Подложка" onClose={() => setDialog(null)} width={400}>
           <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
             <div style={{ opacity: 0.8 }}>{bg.name}</div>
-            <div>Прозрачность: {Math.round(bg.opacity * 100)}%</div>
-            <input type="range" min={0} max={100} value={Math.round(bg.opacity * 100)} onChange={(e) => setBg((b) => ({ ...b, opacity: +e.target.value / 100 }))} />
-            <Row label="Ширина картинки, м"><NumIn value={bg.w} min={1} max={400} step={0.5} onChange={(v) => setBg((b) => ({ ...b, w: v }))} /></Row>
-            <Row label="Смещение X, м"><NumIn value={bg.x} step={0.5} onChange={(v) => setBg((b) => ({ ...b, x: v }))} /></Row>
-            <Row label="Смещение Y, м"><NumIn value={bg.y} step={0.5} onChange={(v) => setBg((b) => ({ ...b, y: v }))} /></Row>
+            <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
+              onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
+            <BgSlider label="Ширина картинки" unit=" м" value={bg.w} min={2} max={Math.max(200, field.w * 3)} step={1}
+              onChange={(v) => setBg((b) => ({ ...b, w: v }))} />
+            <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-field.w} max={field.w * 2} step={1}
+              onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
+            <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-field.h} max={field.h * 2} step={1}
+              onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />
               Закрепить (иначе двигается мышью инструментом «Выделить»)
@@ -1244,6 +1275,25 @@ export default function CQBSelo() {
 }
 
 /* ============================ МЕЛКИЕ КОМПОНЕНТЫ ============================ */
+
+function BgSlider({ label, value, min, max, step, onChange, unit = "" }) {
+  return (
+    <div style={{ display: "grid", gap: 2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+        <span>{label}</span>
+        <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
+          <button type="button" onClick={() => onChange(Math.max(min, Math.round((value - step) * 10) / 10))}
+            style={{ font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` }}>−</button>
+          <b style={{ minWidth: 42, textAlign: "right" }}>{Math.round(value * 10) / 10}{unit}</b>
+          <button type="button" onClick={() => onChange(Math.min(max, Math.round((value + step) * 10) / 10))}
+            style={{ font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` }}>+</button>
+        </span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={(e) => onChange(+e.target.value)} style={{ width: "100%" }} />
+    </div>
+  );
+}
 
 function Row({ label, children }) {
   return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 11.5 }}><span>{label}</span>{children}</div>;
