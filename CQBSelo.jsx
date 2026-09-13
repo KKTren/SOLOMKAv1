@@ -114,6 +114,107 @@ function buildSeed() {
   return { objects, zones };
 }
 
+
+/* ====== ХРАНИЛИЩЕ И ССЫЛКИ ======
+   Библиотека карт живёт в localStorage браузера (у каждого своя).
+   Обмен между людьми — через ссылку: карта пакуется в адрес страницы. */
+
+const LS_PREFIX = "cqb_selo_map:";
+
+function lsAvailable() {
+  try { const k = "__t"; window.localStorage.setItem(k, "1"); window.localStorage.removeItem(k); return true; }
+  catch (e) { return false; }
+}
+
+function listLibrary() {
+  if (!lsAvailable()) return [];
+  const out = [];
+  for (let i = 0; i < window.localStorage.length; i++) {
+    const k = window.localStorage.key(i);
+    if (!k || k.indexOf(LS_PREFIX) !== 0) continue;
+    try {
+      const raw = window.localStorage.getItem(k);
+      const d = JSON.parse(raw);
+      out.push({ key: k, name: d.name || k.slice(LS_PREFIX.length), at: d.at || 0, size: raw.length });
+    } catch (e) { /* битая запись — пропускаем */ }
+  }
+  return out.sort((a, b) => b.at - a.at);
+}
+
+function bytesToB64(bytes) {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64ToBytes(str) {
+  const b = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b + "===".slice((b.length + 3) % 4));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function packMap(data) {
+  const json = JSON.stringify(data);
+  const bytes = new TextEncoder().encode(json);
+  if (typeof window.CompressionStream === "function") {
+    const cs = new window.CompressionStream("gzip");
+    const w = cs.writable.getWriter(); w.write(bytes); w.close();
+    const buf = await new Response(cs.readable).arrayBuffer();
+    return "g" + bytesToB64(new Uint8Array(buf));
+  }
+  return "p" + bytesToB64(bytes);
+}
+
+async function unpackMap(code) {
+  const kind = code[0], body = code.slice(1);
+  const bytes = b64ToBytes(body);
+  if (kind === "g") {
+    if (typeof window.DecompressionStream !== "function") throw new Error("Браузер не умеет распаковывать такие ссылки");
+    const ds = new window.DecompressionStream("gzip");
+    const w = ds.writable.getWriter(); w.write(bytes); w.close();
+    const buf = await new Response(ds.readable).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+
+/* Список карт из папки maps репозитория.
+   Сначала пробуем перечислить папку через GitHub API (тогда достаточно
+   просто положить туда файл), при неудаче читаем maps/index.json. */
+async function fetchSharedMaps() {
+  const out = [];
+  try {
+    const m = String(window.location.hostname).match(/^([\w-]+)\.github\.io$/);
+    if (m) {
+      const seg = String(window.location.pathname).split("/").filter(Boolean);
+      const repo = seg.length ? seg[0] : window.location.hostname;
+      const r = await fetch(`https://api.github.com/repos/${m[1]}/${repo}/contents/maps`);
+      if (r.ok) {
+        const items = await r.json();
+        if (Array.isArray(items)) {
+          items.forEach((it) => {
+            if (it.type === "file" && /\.json$/i.test(it.name) && it.name.toLowerCase() !== "index.json") {
+              out.push({ name: it.name.replace(/\.json$/i, ""), url: it.download_url, size: it.size });
+            }
+          });
+        }
+      }
+    }
+  } catch (e) { /* нет сети или лимит API — идём к index.json */ }
+  if (out.length) return out.sort((a, b) => a.name.localeCompare(b.name, "ru"));
+
+  const r2 = await fetch("maps/index.json", { cache: "no-cache" });
+  if (!r2.ok) throw new Error("папка maps не найдена");
+  const list = await r2.json();
+  (Array.isArray(list) ? list : list.maps || []).forEach((it) => {
+    if (typeof it === "string") out.push({ name: it.replace(/\.json$/i, ""), url: "maps/" + it });
+    else if (it && it.file) out.push({ name: it.name || it.file.replace(/\.json$/i, ""), url: "maps/" + it.file, author: it.author, note: it.note });
+  });
+  return out;
+}
+
 /* ============================ ЭЛЕМЕНТЫ ИНТЕРФЕЙСА ============================ */
 
 function Bevel({ out = true, children, style = {}, ...rest }) {
@@ -343,6 +444,11 @@ export default function CQBSelo() {
   const [bg, setBg] = useState(null);
   const [history, setHistory] = useState([]);
   const [tablesOpen, setTablesOpen] = useState(true);
+  const [library, setLibrary] = useState([]);
+  const [mapName, setMapName] = useState("Без названия");
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareNote, setShareNote] = useState("");
+  const [shared, setShared] = useState({ state: "idle", list: [], err: "" });
 
   const wrapRef = useRef(null), svgRef = useRef(null);
   const fileRef = useRef(null), imgRef = useRef(null);
@@ -615,10 +721,104 @@ export default function CQBSelo() {
     return () => window.removeEventListener("keydown", onKey, true);
   }, [selected, selZone, pushHistory, undo, fitView]);
 
+  /* ---- библиотека карт в браузере ---- */
+  const refreshLibrary = useCallback(() => setLibrary(listLibrary()), []);
+
+  const currentDoc = useCallback((withBg) => ({
+    v: 3, name: mapName, at: Date.now(), field, objects, zones, price,
+    bg: withBg ? bg : null,
+  }), [mapName, field, objects, zones, price, bg]);
+
+  const applyDoc = useCallback((d, label) => {
+    pushHistory();
+    if (d.field) setField(d.field);
+    if (d.objects) setObjects(d.objects);
+    if (d.zones) setZones(d.zones);
+    if (d.price != null) setPrice(d.price);
+    setBg(d.bg || null);
+    if (d.name) setMapName(d.name);
+    setSelected(null); setSelZone(null);
+    setStatus(label);
+  }, [pushHistory]);
+
+  const saveToLibrary = useCallback((name) => {
+    if (!lsAvailable()) { setStatus("Браузер не разрешает сохранение. Пользуйтесь файлом JSON."); return; }
+    const clean = (name || "").trim() || "Без названия";
+    try {
+      window.localStorage.setItem(LS_PREFIX + clean, JSON.stringify({ ...currentDoc(true), name: clean }));
+      setMapName(clean); refreshLibrary();
+      setStatus(`Карта «${clean}» сохранена в этом браузере`);
+    } catch (e) {
+      setStatus("Не хватило места в браузере. Уберите подложку или удалите старые карты.");
+    }
+  }, [currentDoc, refreshLibrary]);
+
+  const loadFromLibrary = useCallback((key) => {
+    try {
+      const d = JSON.parse(window.localStorage.getItem(key));
+      applyDoc(d, `Открыта карта «${d.name || ""}»`);
+      setDialog(null);
+    } catch (e) { setStatus("Запись повреждена и не открылась"); }
+  }, [applyDoc]);
+
+  const deleteFromLibrary = useCallback((key, name) => {
+    window.localStorage.removeItem(key); refreshLibrary();
+    setStatus(`Карта «${name}» удалена из браузера`);
+  }, [refreshLibrary]);
+
+  /* ---- общие карты из папки maps ---- */
+  const openShared = useCallback(() => {
+    setDialog("shared");
+    setShared({ state: "loading", list: [], err: "" });
+    fetchSharedMaps()
+      .then((list) => setShared({ state: "ok", list, err: "" }))
+      .catch((e) => setShared({ state: "err", list: [], err: e.message }));
+  }, []);
+
+  const loadShared = useCallback((item) => {
+    setShared((s0) => ({ ...s0, err: "" }));
+    fetch(item.url, { cache: "no-cache" })
+      .then((r) => { if (!r.ok) throw new Error("файл не открылся"); return r.json(); })
+      .then((d) => { applyDoc(d, `Открыта общая карта «${d.name || item.name}»`); setMapName(d.name || item.name); setDialog(null); })
+      .catch((e) => setShared((s0) => ({ ...s0, err: "Не удалось открыть: " + e.message })));
+  }, [applyDoc]);
+
+  /* ---- ссылка для друзей ---- */
+  const makeShareLink = useCallback(async () => {
+    setDialog("share"); setShareUrl(""); setShareNote("");
+    try {
+      const hadBg = !!bg;
+      const code = await packMap(currentDoc(false));
+      const base = window.location.origin + window.location.pathname;
+      const url = base + "#m=" + code;
+      setShareUrl(url);
+      const kb = Math.round(url.length / 1024);
+      setShareNote(hadBg
+        ? `Длина ссылки ${kb} КБ. Подложка в ссылку не входит — картинку отправьте отдельно.`
+        : `Длина ссылки ${kb} КБ.`);
+    } catch (e) {
+      setShareNote("Не удалось собрать ссылку: " + e.message);
+    }
+  }, [currentDoc, bg]);
+
+  /* карта из адреса страницы при открытии */
+  const hashLoaded = useRef(false);
+  useEffect(() => {
+    if (hashLoaded.current) return;
+    hashLoaded.current = true;
+    const h = window.location.hash || "";
+    const i = h.indexOf("#m=");
+    if (i !== 0) { refreshLibrary(); return; }
+    unpackMap(h.slice(3))
+      .then((d) => applyDoc(d, "Карта открыта по ссылке. Сохраните её у себя, чтобы не потерять."))
+      .catch((e) => setStatus("Ссылка не прочиталась: " + e.message))
+      .then(refreshLibrary);
+  }, [applyDoc, refreshLibrary]);
+
   const saveMap = () => {
-    const data = JSON.stringify({ v: 2, field, objects, zones, price, bg }, null, 1);
+    const data = JSON.stringify(currentDoc(true), null, 1);
     const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
-    const a = document.createElement("a"); a.href = url; a.download = "cqb_selo.json"; a.click();
+    const a = document.createElement("a"); a.href = url; a.download = `${(mapName || "cqb_selo").replace(/[^\wа-яА-Я\- ]+/g, "")}.json`; a.click();
     URL.revokeObjectURL(url); setStatus("Карта сохранена в cqb_selo.json");
   };
   const loadMap = (ev) => {
@@ -698,8 +898,12 @@ export default function CQBSelo() {
   const MENUS = [
     { label: "Файл", items: [
       { label: "Новая карта", fn: newMap },
-      { label: "Открыть карту…", fn: () => fileRef.current && fileRef.current.click() },
-      { label: "Сохранить карту", key: "JSON", fn: saveMap }, "-",
+      { label: "Мои карты…", key: `${library.length}`, fn: () => { refreshLibrary(); setDialog("library"); } },
+      { label: "Общие карты с сайта…", fn: openShared },
+      { label: "Сохранить в браузере", fn: () => saveToLibrary(mapName) },
+      { label: "Ссылка для друзей…", fn: makeShareLink }, "-",
+      { label: "Открыть файл карты…", fn: () => fileRef.current && fileRef.current.click() },
+      { label: "Сохранить файлом", key: "JSON", fn: saveMap }, "-",
       { label: "Экспорт чертежа", key: "SVG", fn: exportSVG },
       { label: "Экспорт расчёта", key: "CSV", fn: exportCSV },
     ]},
@@ -751,8 +955,11 @@ export default function CQBSelo() {
           </div>
           <div style={{ display: "flex", gap: 5, padding: "0 8px 6px", flexWrap: "wrap" }}>
             <ChromeButton onClick={newMap}>Новая карта</ChromeButton>
-            <ChromeButton onClick={() => fileRef.current && fileRef.current.click()}>Открыть</ChromeButton>
-            <ChromeButton onClick={saveMap}>Сохранить</ChromeButton>
+            <ChromeButton onClick={() => fileRef.current && fileRef.current.click()}>Файл</ChromeButton>
+            <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
+            <ChromeButton onClick={() => { refreshLibrary(); setDialog("library"); }}>Мои карты</ChromeButton>
+            <ChromeButton onClick={openShared}>Общие</ChromeButton>
+            <ChromeButton onClick={makeShareLink}>Ссылка</ChromeButton>
             <ChromeButton onClick={() => imgRef.current && imgRef.current.click()}>Подложка</ChromeButton>
             <ChromeButton onClick={undo} disabled={!history.length}>Отменить</ChromeButton>
             <ChromeButton onClick={fitView}>Вписать</ChromeButton>
@@ -1039,8 +1246,9 @@ export default function CQBSelo() {
 
       {/* СТАТУС */}
       <div style={{ display: "flex", borderTop: `2px solid ${C.chromeHi}`, borderBottom: `2px solid ${C.chromeLo}` }}>
-        <StatusCell w={190}>Курсор: {r1(mouse.x)} ; {r1(mouse.y)} м</StatusCell>
-        <StatusCell w={140}>Масштаб 1 : {Math.round(view.mpp * 1000)}</StatusCell>
+        <StatusCell w={168}>Карта: <b>{mapName}</b></StatusCell>
+        <StatusCell w={160}>Курсор: {r1(mouse.x)} ; {r1(mouse.y)} м</StatusCell>
+        <StatusCell w={120}>1 : {Math.round(view.mpp * 1000)}</StatusCell>
         <StatusCell flex>
           {sel ? `Выбрано: ${(ASSETS[sel.t] && ASSETS[sel.t].name) || sel.t}${sel.l != null ? `, ${r1(sel.l)} м — ${baleCount(sel.l, sel.tiers)} тюков` : ""}`
             : zsel ? `Зона: ${zsel.n} — ${r1(zsel.w)} × ${r1(zsel.h)} м` : status}
@@ -1170,6 +1378,106 @@ export default function CQBSelo() {
                 setStatus(`Зона «${name}» создана`);
               }}>Создать зону</ChromeButton>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "library" && (
+        <Modal title="Мои карты" onClose={() => setDialog(null)} width={480}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={mapName} onChange={(e) => setMapName(e.target.value)} placeholder="Название карты"
+                style={{ flex: 1, background: "#fff", border: "1px solid #9A9684", padding: "3px 6px", font: "12px Tahoma, sans-serif" }} />
+              <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
+            </div>
+            {library.length === 0 ? (
+              <div style={{ fontSize: 11.5, opacity: 0.75, padding: "6px 0" }}>
+                Сохранённых карт пока нет. Впишите название и нажмите «Сохранить» — карта останется в этом браузере.
+              </div>
+            ) : (
+              <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
+                  <tbody>
+                    {library.map((m, i) => (
+                      <tr key={m.key} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
+                        <Td>{m.name}</Td>
+                        <Td>{m.at ? new Date(m.at).toLocaleString("ru-RU") : ""}</Td>
+                        <Td right>{Math.round(m.size / 1024)} КБ</Td>
+                        <Td right><span style={{ display: "inline-flex", gap: 4 }}>
+                          <ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadFromLibrary(m.key)}>Открыть</ChromeButton>
+                          <ChromeButton style={{ padding: "1px 7px" }} onClick={() => deleteFromLibrary(m.key, m.name)}>Удалить</ChromeButton>
+                        </span></Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
+              Карты лежат в этом браузере на этом устройстве. Друзья своих карт здесь не увидят — чтобы передать карту,
+              сделайте ссылку через «Файл → Ссылка для друзей» или сохраните файлом JSON.
+              Очистка данных сайта в браузере удалит список.
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "shared" && (
+        <Modal title="Общие карты с сайта" onClose={() => setDialog(null)} width={490}>
+          <div style={{ display: "grid", gap: 9 }}>
+            {shared.state === "loading" && <div style={{ fontSize: 12 }}>Читаю папку maps…</div>}
+            {shared.state === "err" && (
+              <div style={{ fontSize: 11.5, lineHeight: 1.6 }}>
+                Список не загрузился: {shared.err}.<br />
+                Такое бывает, если приложение открыто файлом с диска, а не по ссылке сайта,
+                либо папки maps в репозитории ещё нет.
+              </div>
+            )}
+            {shared.state === "ok" && shared.list.length === 0 && (
+              <div style={{ fontSize: 11.5 }}>Папка maps пустая. Положите туда файлы карт .json.</div>
+            )}
+            {shared.state === "ok" && shared.list.length > 0 && (
+              <div style={{ maxHeight: 300, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
+                  <tbody>
+                    {shared.list.map((m, i) => (
+                      <tr key={m.url} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
+                        <Td>{m.name}{m.author ? <span style={{ opacity: 0.6 }}> · {m.author}</span> : null}</Td>
+                        <Td right>{m.size ? Math.round(m.size / 1024) + " КБ" : ""}</Td>
+                        <Td right><ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadShared(m)}>Открыть</ChromeButton></Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {shared.state === "ok" && shared.err && <div style={{ fontSize: 11.5, color: "#9A2A2A" }}>{shared.err}</div>}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, opacity: 0.75 }}>Карты лежат в папке maps репозитория сайта.</span>
+              <ChromeButton onClick={openShared}>Обновить</ChromeButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "share" && (
+        <Modal title="Ссылка для друзей" onClose={() => setDialog(null)} width={470}>
+          <div style={{ display: "grid", gap: 9, fontSize: 12 }}>
+            {shareUrl ? (<>
+              <div>Вся карта упакована внутрь адреса. Кто откроет ссылку, увидит эту планировку.</div>
+              <textarea readOnly value={shareUrl} rows={5} onFocus={(e) => e.target.select()}
+                style={{ width: "100%", font: "11px Consolas, monospace", border: "1px solid #9A9684", padding: 5, resize: "vertical" }} />
+              <div style={{ display: "flex", gap: 6, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 11, opacity: 0.75 }}>{shareNote}</span>
+                <ChromeButton onClick={() => {
+                  if (navigator.clipboard) navigator.clipboard.writeText(shareUrl).then(
+                    () => setShareNote("Ссылка скопирована"), () => setShareNote("Скопируйте вручную: выделите текст выше"));
+                  else setShareNote("Скопируйте вручную: выделите текст выше");
+                }}>Скопировать</ChromeButton>
+              </div>
+            </>) : (
+              <div>{shareNote || "Собираю ссылку…"}</div>
+            )}
           </div>
         </Modal>
       )}
