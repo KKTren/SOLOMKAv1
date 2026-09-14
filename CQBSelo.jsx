@@ -554,6 +554,19 @@ export default function CQBSelo() {
     return null;
   }, [zones]);
 
+  /* Попадание в подложку. Картинка может быть повёрнута, поэтому точку
+     крутим обратно вокруг центра и проверяем уже в её собственных осях. */
+  const hitBg = useCallback((p) => {
+    if (!bg) return false;
+    const h = bg.w / bg.aspect;
+    const cx = bg.x + bg.w / 2, cy = bg.y + h / 2;
+    const a = -((bg.rot || 0) * Math.PI) / 180;
+    const dx = p.x - cx, dy = p.y - cy;
+    const lx = cx + dx * Math.cos(a) - dy * Math.sin(a);
+    const ly = cy + dx * Math.sin(a) + dy * Math.cos(a);
+    return lx >= bg.x && lx <= bg.x + bg.w && ly >= bg.y && ly <= bg.y + h;
+  }, [bg]);
+
   /* единый цикл перетаскивания на window */
   const beginDrag = useCallback((d) => {
     dragRef.current = d;
@@ -659,7 +672,7 @@ export default function CQBSelo() {
       beginDrag({ kind: "moveZone", id: z.id, dx: p.x - z.x, dy: p.y - z.y });
       return;
     }
-    if (bg && bg.visible && !bg.locked && p.x >= bg.x && p.x <= bg.x + bg.w && p.y >= bg.y && p.y <= bg.y + bg.w / bg.aspect) {
+    if (bg && bg.visible && !bg.locked && hitBg(p)) {
       pushHistory();
       beginDrag({ kind: "moveBg", dx: p.x - bg.x, dy: p.y - bg.y });
       return;
@@ -846,7 +859,7 @@ export default function CQBSelo() {
       img.onload = () => {
         pushHistory();
         const aspect = img.naturalWidth / img.naturalHeight;
-        setBg({ src: rd.result, x: 0, y: 0, w: field.w, aspect, opacity: 0.45, locked: false, visible: true, name: f.name });
+        setBg({ src: rd.result, x: 0, y: 0, w: field.w, aspect, rot: 0, opacity: 0.45, locked: false, visible: true, name: f.name });
         setDialog("bg");
         setStatus(`Подложка «${f.name}» вписана в ширину поля`);
       };
@@ -942,6 +955,7 @@ export default function CQBSelo() {
 
   const ui = { font: "12px/1.35 Tahoma, Verdana, system-ui, sans-serif", color: C.ink };
   const bgH = bg ? bg.w / bg.aspect : 0;
+  const bgRot = bg ? (bg.rot || 0) : 0;
 
   return (
     <div style={{ ...ui, background: C.chrome, width: "100%", height: "100vh", overflow: "hidden", display: "flex", flexDirection: "column", userSelect: "none" }}
@@ -978,7 +992,7 @@ export default function CQBSelo() {
           </svg>
           <div style={{ lineHeight: 1.05 }}>
             <div style={{ font: "bold 20px Tahoma, sans-serif", letterSpacing: ".03em" }}>CQB СЕЛО</div>
-            <div style={{ font: "10px Tahoma, sans-serif", opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.1</div>
+            <div style={{ font: "10px Tahoma, sans-serif", opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.2</div>
           </div>
         </div>
       </div>
@@ -1019,9 +1033,9 @@ export default function CQBSelo() {
           <div style={{ marginTop: 8 }}>
             <PanelTitle>ПОСТРОЕНИЕ</PanelTitle>
             <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
-              <Row label="Ширина, м"><NumIn value={field.w} min={10} max={300} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
-              <Row label="Длина, м"><NumIn value={field.h} min={10} max={300} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
-              <Row label="Сетка, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"]]} /></Row>
+              <Row label="Ширина, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
+              <Row label="Длина, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
+              <Row label="Сетка, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
               <Row label="Привязка"><Select value={snap} onChange={(v) => setSnap(+v)} options={[[0.1, "0.1 м"], [0.5, "0.5 м"], [1, "1 м"], [2, "2 м"]]} /></Row>
               <Row label="Ярусов"><Select value={tiers} onChange={(v) => setTiers(+v)} options={[[1, "1 (0.8 м)"], [2, "2 (1.6 м)"], [3, "3 (2.4 м)"]]} /></Row>
               <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
@@ -1037,11 +1051,23 @@ export default function CQBSelo() {
                 <div style={{ fontSize: 10.5, opacity: 0.8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bg.name}</div>
                 <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
                   onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
-                <BgSlider label="Ширина" unit=" м" value={bg.w} min={2} max={Math.max(200, field.w * 3)} step={1}
-                  onChange={(v) => setBg((b) => ({ ...b, w: v }))} />
-                <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-field.w} max={field.w * 2} step={1}
+                <BgSlider label="Ширина" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
+                  onChange={(v) => setBg((b) => ({ ...b, w: v }))}
+                  extra={<div style={{ display: "flex", gap: 3 }}>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: field.w }))}>= поле</ChromeButton>
+                  </div>} />
+                <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
+                  onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
+                  extra={<div style={{ display: "flex", gap: 3 }}>
+                    {[0, 90, 180, 270].map((a) => (
+                      <ChromeButton key={a} style={{ flex: 1, padding: "0 3px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}°</ChromeButton>
+                    ))}
+                  </div>} />
+                <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
                   onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
-                <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-field.h} max={field.h * 2} step={1}
+                <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
                   onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
                 <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
                   <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />Закрепить
@@ -1086,7 +1112,9 @@ export default function CQBSelo() {
             ))}
 
             {bg && bg.visible && (
-              <image href={bg.src} xlinkHref={bg.src} x={bg.x} y={bg.y} width={bg.w} height={bgH} opacity={bg.opacity} preserveAspectRatio="none" />
+              <g transform={bgRot ? `rotate(${bgRot} ${bg.x + bg.w / 2} ${bg.y + bgH / 2})` : undefined}>
+                <image href={bg.src} xlinkHref={bg.src} x={bg.x} y={bg.y} width={bg.w} height={bgH} opacity={bg.opacity} preserveAspectRatio="none" />
+              </g>
             )}
 
             <rect x={0} y={0} width={field.w} height={field.h} fill="url(#concrete)" opacity={bg && bg.visible ? 0 : 1} />
@@ -1507,18 +1535,31 @@ export default function CQBSelo() {
             <div style={{ opacity: 0.8 }}>{bg.name}</div>
             <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
               onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
-            <BgSlider label="Ширина картинки" unit=" м" value={bg.w} min={2} max={Math.max(200, field.w * 3)} step={1}
-              onChange={(v) => setBg((b) => ({ ...b, w: v }))} />
-            <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-field.w} max={field.w * 2} step={1}
+            <BgSlider label="Ширина картинки" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
+              onChange={(v) => setBg((b) => ({ ...b, w: v }))}
+              extra={<div style={{ display: "flex", gap: 4 }}>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 25) / 100) }))}>÷4</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 400) / 100 }))}>×4</ChromeButton>
+              </div>} />
+            <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
+              onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
+              extra={<div style={{ display: "flex", gap: 4 }}>
+                {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
+                  <ChromeButton key={a} style={{ flex: 1, padding: "0 3px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}</ChromeButton>
+                ))}
+              </div>} />
+            <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
               onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
-            <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-field.h} max={field.h * 2} step={1}
+            <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
               onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
             <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />
               Закрепить (иначе двигается мышью инструментом «Выделить»)
             </label>
             <div style={{ fontSize: 11, opacity: 0.75 }}>
-              Как совместить: подберите ширину так, чтобы известный объект на снимке совпал по длине с сеткой, затем сдвиньте картинку. Мелкая сетка — 1 м.
+              Как совместить: подберите ширину так, чтобы известный объект на снимке совпал по длине с сеткой, поворотом разверните снимок по осям поля, затем сдвиньте картинку. Мелкая сетка — 1 м. Ширина не ограничена сверху: ползунок логарифмический, точное число можно вписать руками, кнопки ×2 и ÷2 меняют масштаб скачком.
             </div>
             <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
               <ChromeButton onClick={() => setBg((b) => ({ ...b, x: 0, y: 0, w: field.w }))}>Вписать в поле</ChromeButton>
@@ -1531,9 +1572,9 @@ export default function CQBSelo() {
       {dialog === "field" && (
         <Modal title="Размер поля и сетка" onClose={() => setDialog(null)} width={320}>
           <div style={{ display: "grid", gap: 8 }}>
-            <Row label="Ширина поля, м"><NumIn value={field.w} min={10} max={300} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
-            <Row label="Длина поля, м"><NumIn value={field.h} min={10} max={300} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
-            <Row label="Шаг сетки, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"]]} /></Row>
+            <Row label="Ширина поля, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
+            <Row label="Длина поля, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
+            <Row label="Шаг сетки, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
             <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
               <ChromeButton onClick={() => { fitView(); setDialog(null); }}>Готово</ChromeButton>
             </div>
@@ -1571,9 +1612,10 @@ export default function CQBSelo() {
       {dialog === "about" && (
         <Modal title="О программе" onClose={() => setDialog(null)} width={380}>
           <div style={{ fontSize: 12, display: "grid", gap: 7 }}>
-            <div style={{ font: "bold 16px Tahoma, sans-serif" }}>CQB СЕЛО · планировщик поля v1.1</div>
+            <div style={{ font: "bold 16px Tahoma, sans-serif" }}>CQB СЕЛО · планировщик поля v1.2</div>
             <div>Планировка CQB-полигона из тюков сена с расчётом количества тюков и сметы.</div>
             <div>Тюк {BALE_L} × {BALE_T} м. Все координаты в метрах, сетка метрическая.</div>
+            <div>Поле до 1000 м. Подложка тянется без верхнего предела и крутится на любой угол 0…360°.</div>
             <div style={{ opacity: 0.75 }}>Карты сохраняются в JSON на ваш компьютер. Ничего никуда не отправляется, работает без интернета.</div>
           </div>
         </Modal>
@@ -1584,21 +1626,58 @@ export default function CQBSelo() {
 
 /* ============================ МЕЛКИЕ КОМПОНЕНТЫ ============================ */
 
-function BgSlider({ label, value, min, max, step, onChange, unit = "" }) {
+const miniBtnStyle = { font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` };
+
+/* Ползунок подложки.
+   free  — верхнего предела нет: число вводится руками, шкала логарифмическая
+           и сама растягивается вслед за значением (min > 0) либо линейная,
+           но раздвигающаяся (смещения, где бывает минус).
+   wrap  — значение ходит по кругу 0…360 (угол поворота).
+   minClamp — жёсткий нижний предел в режиме free; без него нижнего нет. */
+function BgSlider({ label, value, min, max, step, onChange, unit = "", free = false, wrap = false, minClamp = null, extra = null }) {
+  const [draft, setDraft] = useState(null);
+  const r1 = (v) => Math.round(v * 10) / 10;
+  const norm = (v) => {
+    if (!isFinite(v)) return value;
+    if (wrap) { const t = v % 360; return r1(t < 0 ? t + 360 : t); }
+    const lo = free ? (minClamp == null ? -Infinity : minClamp) : min;
+    const hi = free ? Infinity : max;
+    return r1(Math.min(hi, Math.max(lo, v)));
+  };
+  /* Логарифмическая шкала: одним ползунком и сантиметры, и километры. */
+  const logMode = free && min > 0;
+  const lnMin = logMode ? Math.log(min) : 0;
+  const lnMax = logMode ? Math.log(Math.max(max, value * 1.5, min * 10)) : 0;
+  const toSlider = (v) => (logMode ? ((Math.log(Math.max(min, v)) - lnMin) / (lnMax - lnMin)) * 2000 : v);
+  const fromSlider = (t) => (logMode ? Math.exp(lnMin + (t / 2000) * (lnMax - lnMin)) : t);
+  const sliderMin = logMode ? 0 : (free ? Math.min(min, value) : min);
+  const sliderMax = logMode ? 2000 : (free ? Math.max(max, value) : max);
+  const sliderStep = logMode ? 1 : step;
+  const typed = free || wrap;
   return (
     <div style={{ display: "grid", gap: 2 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, gap: 6 }}>
         <span>{label}</span>
         <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
-          <button type="button" onClick={() => onChange(Math.max(min, Math.round((value - step) * 10) / 10))}
-            style={{ font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` }}>−</button>
-          <b style={{ minWidth: 42, textAlign: "right" }}>{Math.round(value * 10) / 10}{unit}</b>
-          <button type="button" onClick={() => onChange(Math.min(max, Math.round((value + step) * 10) / 10))}
-            style={{ font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` }}>+</button>
+          <button type="button" onClick={() => onChange(norm(value - step))} style={miniBtnStyle}>−</button>
+          {typed ? (
+            <>
+              <input type="number" value={draft == null ? r1(value) : draft} step={step}
+                onChange={(e) => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(norm(n)); }}
+                onBlur={() => setDraft(null)}
+                style={{ width: 66, textAlign: "right", font: "11px Tahoma, sans-serif", background: "#fff", border: "1px solid #9A9684", padding: "0 3px" }} />
+              {unit ? <span style={{ fontSize: 10.5, opacity: 0.75 }}>{unit.trim()}</span> : null}
+            </>
+          ) : (
+            <b style={{ minWidth: 42, textAlign: "right" }}>{r1(value)}{unit}</b>
+          )}
+          <button type="button" onClick={() => onChange(norm(value + step))} style={miniBtnStyle}>+</button>
         </span>
       </div>
-      <input type="range" min={min} max={max} step={step} value={value}
-        onChange={(e) => onChange(+e.target.value)} style={{ width: "100%" }} />
+      <input type="range" min={sliderMin} max={sliderMax} step={sliderStep}
+        value={Math.max(sliderMin, Math.min(sliderMax, toSlider(value)))}
+        onChange={(e) => onChange(norm(fromSlider(+e.target.value)))} style={{ width: "100%" }} />
+      {extra}
     </div>
   );
 }
@@ -1609,10 +1688,18 @@ function Row({ label, children }) {
 function Static({ children }) {
   return <span style={{ background: "#fff", border: "1px solid #9A9684", padding: "1px 6px", minWidth: 66, textAlign: "right", fontSize: 11.5 }}>{children}</span>;
 }
+/* Поле числа. Пока в нём стоит курсор, показываем ровно то, что набирают:
+   иначе строку нельзя стереть и ввести заново — React возвращает старое число. */
 function NumIn({ value, onChange, min, max, step = 1, width = 66 }) {
+  const [draft, setDraft] = useState(null);
   return (
-    <input type="number" value={value} step={step} min={min} max={max}
-      onChange={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) onChange(Math.min(max == null ? 1e6 : max, Math.max(min == null ? -1e6 : min, v))); }}
+    <input type="number" value={draft == null ? value : draft} step={step} min={min} max={max}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        const v = parseFloat(e.target.value);
+        if (!isNaN(v)) onChange(Math.min(max == null ? 1e6 : max, Math.max(min == null ? -1e6 : min, v)));
+      }}
+      onBlur={() => setDraft(null)}
       style={{ width, background: "#fff", border: "1px solid #9A9684", padding: "1px 4px", font: "11.5px Tahoma, sans-serif", textAlign: "right" }} />
   );
 }
