@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } from "react";
 
 /* ============================ КОНСТАНТЫ ============================ */
 
@@ -86,6 +86,15 @@ const ASSETS = {
 };
 
 /* ============================ УТИЛИТЫ ============================ */
+
+/* Компактный (телефонный) режим. Включается на узком или низком экране:
+   панели уезжают в выдвижной лист, кнопки и поля становятся крупнее. */
+const CompactCtx = createContext(false);
+const useCompact = () => useContext(CompactCtx);
+const detectCompact = () => (typeof window === "undefined" ? false : window.innerWidth < 900 || window.innerHeight < 520);
+const detectCoarse = () => {
+  try { return window.matchMedia("(pointer: coarse)").matches; } catch (e) { return false; }
+};
 
 let _uid = 0;
 const uid = (p) => `${p}_${Date.now().toString(36)}_${(_uid++).toString(36)}`;
@@ -230,20 +239,23 @@ function Bevel({ out = true, children, style = {}, ...rest }) {
 
 function ChromeButton({ active, children, onClick, title, style = {}, disabled }) {
   const [down, setDown] = useState(false);
+  const compact = useCompact();
   const pressed = down || active;
+  /* на телефоне: палец, а не курсор — кнопка не меньше 36 px и шрифт не мельче 13 px */
+  const big = compact ? { minHeight: 36, minWidth: 36, fontSize: Math.max(13, style.fontSize || 14), touchAction: "manipulation" } : null;
   return (
     <button type="button" title={title} onClick={onClick} disabled={disabled}
       onPointerDown={() => setDown(true)} onPointerUp={() => setDown(false)} onPointerLeave={() => setDown(false)}
       onMouseUp={(e) => e.currentTarget.blur()}
       style={{
         background: active ? "#C4BFAE" : C.chrome, color: disabled ? "#8C8878" : C.ink,
-        font: "12px/1.1 Tahoma, Verdana, system-ui, sans-serif", padding: "4px 9px",
+        font: "12px/1.1 Tahoma, Verdana, system-ui, sans-serif", padding: compact ? "6px 11px" : "4px 9px",
         cursor: disabled ? "default" : "pointer",
         borderTop: `2px solid ${pressed ? C.chromeLo : C.chromeHi}`,
         borderLeft: `2px solid ${pressed ? C.chromeLo : C.chromeHi}`,
         borderBottom: `2px solid ${pressed ? C.chromeHi : C.chromeLo}`,
         borderRight: `2px solid ${pressed ? C.chromeHi : C.chromeLo}`,
-        ...style,
+        ...style, ...big,
       }}>{children}</button>
   );
 }
@@ -300,6 +312,25 @@ function Menu({ label, items, open, setOpen }) {
 }
 
 function Modal({ title, children, onClose, width = 380 }) {
+  const compact = useCompact();
+  if (compact) {
+    /* на телефоне окно не шире экрана, с крупным крестиком и отступами под вырез */
+    return (
+      <div style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center",
+        padding: "calc(8px + env(safe-area-inset-top)) calc(8px + env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) calc(8px + env(safe-area-inset-left))",
+      }}
+        onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+        <Bevel style={{ width: "100%", maxWidth: width, maxHeight: "100%", display: "flex", flexDirection: "column", boxShadow: "4px 4px 0 rgba(0,0,0,.3)" }}>
+          <div style={{ background: "#2F5FA8", color: "#fff", font: "bold 14px Tahoma, sans-serif", padding: "4px 4px 4px 10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexShrink: 0 }}>
+            <span>{title}</span>
+            <button type="button" onClick={onClose} aria-label="Закрыть" style={{ background: C.chrome, border: `1px solid ${C.chromeLo}`, cursor: "pointer", font: "14px Tahoma", width: 38, height: 32, padding: 0, touchAction: "manipulation" }}>✕</button>
+          </div>
+          <div style={{ padding: 12, overflowY: "auto", overscrollBehavior: "contain", minHeight: 0, fontSize: 14 }}>{children}</div>
+        </Bevel>
+      </div>
+    );
+  }
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.35)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}
       onPointerDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -314,8 +345,8 @@ function Modal({ title, children, onClose, width = 380 }) {
   );
 }
 
-const ToolIcon = ({ kind }) => {
-  const s = { width: 30, height: 26 };
+const ToolIcon = ({ kind, w = 30, h = 26 }) => {
+  const s = { width: w, height: h };
   switch (kind) {
     case "select": return (<svg {...s} viewBox="0 0 24 24"><path d="M5 3l13 9-6 1 3 7-3 1-3-7-4 4z" fill="#111" /></svg>);
     case "wallH": return (<svg {...s} viewBox="0 0 32 24"><rect x="2" y="8" width="28" height="9" fill={C.hayFill} stroke={C.hayEdge} /><path d="M4 10.5h24M4 13h24M4 15h24" stroke={C.hayLine} /></svg>);
@@ -348,7 +379,7 @@ const AssetThumb = ({ t }) => {
 
 /* ============================ ОТРИСОВКА ОБЪЕКТОВ ============================ */
 
-function HayWall({ o, selected }) {
+function HayWall({ o, selected, ss = 1 }) {
   const horiz = o.t === "wallH";
   const n = Math.ceil(o.l / BALE_L);
   const bales = [];
@@ -366,11 +397,11 @@ function HayWall({ o, selected }) {
     );
   }
   return (<g>{bales}
-    {selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={(horiz ? o.l : BALE_T) + 0.3} height={(horiz ? BALE_T : o.l) + 0.3} fill="none" stroke={C.sel} strokeWidth={0.16} strokeDasharray="0.5 0.3" />}
+    {selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={(horiz ? o.l : BALE_T) + 0.3} height={(horiz ? BALE_T : o.l) + 0.3} fill="none" stroke={C.sel} strokeWidth={0.16 * ss} strokeDasharray={`${0.5 * ss} ${0.3 * ss}`} />}
   </g>);
 }
 
-function Prop({ o, selected }) {
+function Prop({ o, selected, ss = 1 }) {
   const a = ASSETS[o.t] || {};
   const w = a.w || 0.8, h = a.h || 0.8;
   let body = null;
@@ -402,17 +433,17 @@ function Prop({ o, selected }) {
       <circle cx={cx - w * 0.14} cy={cy - h * 0.22} r={w * 0.1} fill="#fff" />
       <circle cx={cx + w * 0.14} cy={cy - h * 0.22} r={w * 0.1} fill="#fff" /></>);
   }
-  return (<g>{body}{selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={w + 0.3} height={h + 0.3} fill="none" stroke={C.sel} strokeWidth={0.14} strokeDasharray="0.4 0.25" />}</g>);
+  return (<g>{body}{selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={w + 0.3} height={h + 0.3} fill="none" stroke={C.sel} strokeWidth={0.14 * ss} strokeDasharray={`${0.4 * ss} ${0.25 * ss}`} />}</g>);
 }
 
-function Figure({ o, selected }) {
+function Figure({ o, selected, ss = 1 }) {
   const col = o.t === "figA" ? C.teamA : C.teamB;
   return (
     <g transform={`translate(${o.x},${o.y})`}>
       <ellipse cx={0} cy={0.1} rx={0.55} ry={0.4} fill="#000" opacity={0.12} />
       <path d="M0 -0.16 c-0.5 0 -0.72 0.42 -0.72 0.86 h1.44 c0 -0.44 -0.22 -0.86 -0.72 -0.86 z" fill={col} stroke="#111" strokeWidth={0.05} />
       <circle cx={0} cy={-0.34} r={0.29} fill={col} stroke="#111" strokeWidth={0.05} />
-      {selected && <circle cx={0} cy={0} r={0.95} fill="none" stroke={C.sel} strokeWidth={0.12} strokeDasharray="0.3 0.2" />}
+      {selected && <circle cx={0} cy={0} r={0.95} fill="none" stroke={C.sel} strokeWidth={0.12 * ss} strokeDasharray={`${0.3 * ss} ${0.2 * ss}`} />}
     </g>
   );
 }
@@ -449,15 +480,32 @@ export default function CQBSelo() {
   const [shareUrl, setShareUrl] = useState("");
   const [shareNote, setShareNote] = useState("");
   const [shared, setShared] = useState({ state: "idle", list: [], err: "" });
+  const [compact, setCompact] = useState(detectCompact);
+  const [vp, setVp] = useState(() => (typeof window === "undefined" ? { w: 1200, h: 800 } : { w: window.innerWidth, h: window.innerHeight }));
+  const [coarse, setCoarse] = useState(detectCoarse);
+  const [sheet, setSheet] = useState(null);
+  const [bgFinger, setBgFinger] = useState(false);
 
   const wrapRef = useRef(null), svgRef = useRef(null);
   const fileRef = useRef(null), imgRef = useRef(null);
   const dragRef = useRef(null);
+  const dragTokenRef = useRef(null);
+  const touchesRef = useRef(new Map());
+  const pinchRef = useRef(null);
   const viewRef = useRef(view);
   const snapRef = useRef(snap);
   useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { snapRef.current = snap; }, [snap]);
 
+  /* Ширина экрана решает раскладку: узкий или низкий — телефонная. */
+  useEffect(() => {
+    const on = () => { setCompact(detectCompact()); setVp({ w: window.innerWidth, h: window.innerHeight }); };
+    window.addEventListener("resize", on);
+    window.addEventListener("orientationchange", on);
+    return () => { window.removeEventListener("resize", on); window.removeEventListener("orientationchange", on); };
+  }, []);
+
+  /* Раскладка меняется целиком, поэтому следим за новым контейнером карты. */
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return;
@@ -468,9 +516,15 @@ export default function CQBSelo() {
     const ro = new ResizeObserver(read);
     ro.observe(el); read();
     return () => ro.disconnect();
-  }, []);
+  }, [compact]);
 
   const vb = useMemo(() => ({ x: view.cx, y: view.cy, w: boxSize.w * view.mpp, h: boxSize.h * view.mpp }), [view, boxSize]);
+
+  /* Предел отдаления: не меньше прежних 0.3 м/пкс, но большое поле
+     на узком экране всё равно должно помещаться целиком с запасом. */
+  const zoomMax = Math.max(0.3, ((field.w + 22) / boxSize.w) * 2, ((field.h + 14) / boxSize.h) * 2);
+  const zoomMaxRef = useRef(zoomMax);
+  useEffect(() => { zoomMaxRef.current = zoomMax; }, [zoomMax]);
 
   const toWorld = useCallback((cx, cy) => {
     const r = svgRef.current.getBoundingClientRect();
@@ -527,22 +581,30 @@ export default function CQBSelo() {
     return { a, b };
   }, [stats.figs]);
 
-  const hitTest = useCallback((p) => {
+  /* tol — допуск в метрах. Мышью попадаем точно (tol = 0), а пальцем
+     стена в 0.8 м на телефоне — это 4 пикселя, поэтому при касании
+     берём ближайший объект в пределах допуска, если точного попадания нет. */
+  const hitTest = useCallback((p, tol = 0) => {
     const list = Object.values(objects);
+    let best = null, bestD = Infinity;
     for (let i = list.length - 1; i >= 0; i--) {
       const o = list[i];
+      let d;
       if (o.t === "figA" || o.t === "figB") {
-        if (Math.hypot(o.x - p.x, o.y - p.y) < 0.75) return o;
-      } else if (o.t === "wallH") {
-        if (p.x >= o.x && p.x <= o.x + o.l && p.y >= o.y && p.y <= o.y + BALE_T) return o;
-      } else if (o.t === "wallV") {
-        if (p.y >= o.y && p.y <= o.y + o.l && p.x >= o.x && p.x <= o.x + BALE_T) return o;
+        const r = Math.hypot(o.x - p.x, o.y - p.y);
+        if (r < 0.75) return o;
+        d = r - 0.75;
       } else {
-        const a = ASSETS[o.t] || {}; const w = a.w || 0.8, h = a.h || 0.8;
-        if (p.x >= o.x && p.x <= o.x + w && p.y >= o.y && p.y <= o.y + h) return o;
+        let x0 = o.x, y0 = o.y, x1, y1;
+        if (o.t === "wallH") { x1 = o.x + o.l; y1 = o.y + BALE_T; }
+        else if (o.t === "wallV") { x1 = o.x + BALE_T; y1 = o.y + o.l; }
+        else { const a = ASSETS[o.t] || {}; x1 = o.x + (a.w || 0.8); y1 = o.y + (a.h || 0.8); }
+        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) return o;
+        d = Math.hypot(Math.max(x0 - p.x, 0, p.x - x1), Math.max(y0 - p.y, 0, p.y - y1));
       }
+      if (d <= tol && d < bestD) { best = o; bestD = d; }
     }
-    return null;
+    return best;
   }, [objects]);
 
   const hitZone = useCallback((p) => {
@@ -567,12 +629,40 @@ export default function CQBSelo() {
     return lx >= bg.x && lx <= bg.x + bg.w && ly >= bg.y && ly <= bg.y + h;
   }, [bg]);
 
-  /* единый цикл перетаскивания на window */
-  const beginDrag = useCallback((d) => {
+  /* единый цикл перетаскивания на window.
+     pid — какой палец/кнопка ведёт перетаскивание: при мультитаче чужие
+     касания не должны двигать объект. Жетон (token) позволяет оборвать
+     перетаскивание снаружи — например, когда второй палец начинает щипок.
+     th — порог в пикселях: пока палец не сдвинулся дальше, это ещё касание,
+     а не перетаскивание (иначе дрожь пальца сдвигает объекты). */
+  const beginDrag = useCallback((d, pid) => {
+    const token = {};
+    dragTokenRef.current = token;
     dragRef.current = d;
-    const move = (e) => {
-      const dr = dragRef.current;
+    const alive = () => dragTokenRef.current === token;
+    const mine = (e) => pid == null || e.pointerId === pid;
+    function cleanup() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    }
+    function move(e) {
+      if (!alive()) { cleanup(); return; }
+      if (!mine(e)) return;
+      let dr = dragRef.current;
       if (!dr) return;
+      if (dr.th) {
+        if (Math.hypot(e.clientX - dr.sx, e.clientY - dr.sy) < dr.th) return;
+        if (dr.kind === "tap") {
+          /* палец поехал — значит, это не нажатие, а сдвиг карты */
+          const v = viewRef.current;
+          dragRef.current = { kind: "pan", sx: e.clientX, sy: e.clientY, ox: v.cx, oy: v.cy };
+          return;
+        }
+        dr = { ...dr, th: 0 };
+        dragRef.current = dr;
+      }
+      if (dr.kind === "tap") return;
       const s = snapRef.current;
       const p = toWorld(e.clientX, e.clientY);
       setMouse(p);
@@ -592,17 +682,20 @@ export default function CQBSelo() {
       } else if (dr.kind === "moveBg") {
         setBg((b) => (b ? { ...b, x: r1(p.x - dr.dx), y: r1(p.y - dr.dy) } : b));
       }
-    };
-    const up = () => {
+    }
+    function up(e) {
+      if (!alive()) { cleanup(); return; }
+      if (!mine(e)) return;
+      cleanup();
+      dragTokenRef.current = null;
       const dr = dragRef.current;
       dragRef.current = null;
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", up);
       setGhost(null);
       if (!dr) return;
       const s = snapRef.current;
-      if (dr.kind === "draw") {
+      if (dr.kind === "tap") {
+        if (e.type !== "pointercancel" && dr.fn) dr.fn();
+      } else if (dr.kind === "draw") {
         const horiz = dr.dir === "wallH";
         const len = snapTo(Math.abs(horiz ? dr.x1 - dr.x0 : dr.y1 - dr.y0), s);
         if (len >= 1) {
@@ -619,66 +712,170 @@ export default function CQBSelo() {
         const w = Math.abs(dr.x1 - dr.x0), h = Math.abs(dr.y1 - dr.y0);
         if (w >= 1 && h >= 1) setPending({ x, y, w, h, k: dr.k, n: "" });
       }
-    };
+    }
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
   }, [toWorld]);
+  const beginDragRef = useRef(beginDrag);
+  useEffect(() => { beginDragRef.current = beginDrag; }, [beginDrag]);
+
+  /* Оборвать текущее перетаскивание так, будто его не было:
+     недорисованную стену выбросить, сдвинутый объект вернуть на место. */
+  const cancelDrag = useCallback(() => {
+    const dr = dragRef.current;
+    dragTokenRef.current = null;
+    dragRef.current = null;
+    setGhost(null);
+    if (!dr) return;
+    if (dr.kind === "draw" || dr.kind === "zone") setHistory((h) => h.slice(0, -1));
+    else if (dr.kind === "move" && dr.orig) {
+      setObjects((m) => (m[dr.id] ? { ...m, [dr.id]: { ...m[dr.id], x: dr.orig.x, y: dr.orig.y } } : m));
+      setHistory((h) => h.slice(0, -1));
+    } else if (dr.kind === "moveZone" && dr.orig) {
+      setZones((m) => (m[dr.id] ? { ...m, [dr.id]: { ...m[dr.id], x: dr.orig.x, y: dr.orig.y } } : m));
+      setHistory((h) => h.slice(0, -1));
+    } else if (dr.kind === "moveBg" && dr.orig) {
+      setBg((b) => (b ? { ...b, x: dr.orig.x, y: dr.orig.y } : b));
+      setHistory((h) => h.slice(0, -1));
+    }
+  }, []);
+
+  /* Щипок двумя пальцами: зум и сдвиг карты сразу. Точка карты под
+     серединой между пальцами остаётся под ней же. */
+  const anchorPinch = useCallback(() => {
+    const pts = [...touchesRef.current.values()];
+    if (pts.length < 2 || !svgRef.current) { pinchRef.current = null; return; }
+    const [a, b] = pts;
+    const r = svgRef.current.getBoundingClientRect();
+    const v = viewRef.current;
+    const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+    pinchRef.current = { dist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), mpp: v.mpp, wx: v.cx + mx * v.mpp, wy: v.cy + my * v.mpp };
+  }, []);
+
+  useEffect(() => {
+    const mv = (e) => {
+      if (e.pointerType !== "touch" || !touchesRef.current.has(e.pointerId)) return;
+      touchesRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const pr = pinchRef.current;
+      if (!pr || touchesRef.current.size < 2 || !svgRef.current) return;
+      const [a, b] = [...touchesRef.current.values()];
+      const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+      const r = svgRef.current.getBoundingClientRect();
+      const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+      const mpp = Math.min(zoomMaxRef.current, Math.max(0.008, (pr.mpp * pr.dist) / dist));
+      setView({ mpp, cx: pr.wx - mx * mpp, cy: pr.wy - my * mpp });
+    };
+    const up = (e) => {
+      if (e.pointerType !== "touch" || !touchesRef.current.has(e.pointerId)) return;
+      touchesRef.current.delete(e.pointerId);
+      if (!pinchRef.current) return;
+      if (touchesRef.current.size >= 2) { anchorPinch(); return; }
+      pinchRef.current = null;
+      /* один палец остался на экране — продолжаем им двигать карту */
+      if (touchesRef.current.size === 1) {
+        const [[id, p]] = [...touchesRef.current.entries()];
+        const v = viewRef.current;
+        beginDragRef.current({ kind: "pan", sx: p.x, sy: p.y, ox: v.cx, oy: v.cy }, id);
+      }
+    };
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+    return () => {
+      window.removeEventListener("pointermove", mv);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+    };
+  }, [anchorPinch]);
 
   const onPointerDown = (ev) => {
     setOpenMenu(null);
+    const isTouch = ev.pointerType === "touch";
+    const fingerish = ev.pointerType === "touch" || ev.pointerType === "pen";
+    if (fingerish !== coarse) setCoarse(fingerish);
+    if (isTouch) {
+      if (ev.isPrimary) touchesRef.current.clear();
+      touchesRef.current.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (touchesRef.current.size >= 2) {
+        /* второй палец: что бы ни начал первый — отменяем и щиплем */
+        cancelDrag(); anchorPinch(); return;
+      }
+    }
+    const pid = ev.pointerId;
     const p = toWorld(ev.clientX, ev.clientY);
     const v = viewRef.current;
+    const tol = fingerish ? 14 * v.mpp : 0;
+    const TH = 8;
 
     if (ev.button === 1 || ev.button === 2 || ev.shiftKey || tool === "pan") {
-      beginDrag({ kind: "pan", sx: ev.clientX, sy: ev.clientY, ox: v.cx, oy: v.cy });
+      beginDrag({ kind: "pan", sx: ev.clientX, sy: ev.clientY, ox: v.cx, oy: v.cy }, pid);
       return;
     }
     if (tool === "wallH" || tool === "wallV") {
       pushHistory();
       const d = { kind: "draw", dir: tool, tiers, x0: snapTo(p.x, snap), y0: snapTo(p.y, snap), x1: snapTo(p.x, snap), y1: snapTo(p.y, snap) };
-      setGhost(d); beginDrag(d); return;
+      setGhost(d); beginDrag(d, pid); return;
     }
     if (tool === "zone") {
       pushHistory();
       const d = { kind: "zone", k: zoneKind, x0: snapTo(p.x, snap), y0: snapTo(p.y, snap), x1: snapTo(p.x, snap), y1: snapTo(p.y, snap) };
-      setGhost(d); beginDrag(d); return;
+      setGhost(d); beginDrag(d, pid); return;
     }
     if (tool === "place") {
-      pushHistory();
-      const a = ASSETS[asset]; const id = uid("o");
-      const o = a.cat === "fig"
-        ? { id, t: asset, x: r1(p.x), y: r1(p.y) }
-        : { id, t: asset, x: snapTo(p.x - (a.w || 0) / 2, snap), y: snapTo(p.y - (a.h || 0) / 2, snap), tiers: (asset === "column" || asset === "stack") ? tiers : 1 };
-      setObjects((m) => ({ ...m, [id]: o }));
-      setSelected(id); setSelZone(null);
-      setStatus(`Добавлено: ${a.name}`);
+      const placeIt = () => {
+        pushHistory();
+        const a = ASSETS[asset]; const id = uid("o");
+        const o = a.cat === "fig"
+          ? { id, t: asset, x: r1(p.x), y: r1(p.y) }
+          : { id, t: asset, x: snapTo(p.x - (a.w || 0) / 2, snap), y: snapTo(p.y - (a.h || 0) / 2, snap), tiers: (asset === "column" || asset === "stack") ? tiers : 1 };
+        setObjects((m) => ({ ...m, [id]: o }));
+        setSelected(id); setSelZone(null);
+        setStatus(`Добавлено: ${a.name}`);
+      };
+      /* пальцем ставим по отпусканию: если палец поехал, это сдвиг карты */
+      if (isTouch) beginDrag({ kind: "tap", sx: ev.clientX, sy: ev.clientY, th: TH, fn: placeIt }, pid);
+      else placeIt();
       return;
     }
-    const hit = hitTest(p);
+    const hit = hitTest(p, tol);
     if (tool === "delete") {
-      if (hit) { pushHistory(); setObjects((m) => { const c = { ...m }; delete c[hit.id]; return c; }); setSelected(null); setStatus(`Удалено: ${ASSETS[hit.t]?.name || hit.t}`); }
-      else { const z = hitZone(p); if (z) { pushHistory(); setZones((m) => { const c = { ...m }; delete c[z.id]; return c; }); setSelZone(null); setStatus(`Удалена зона: ${z.n}`); } }
+      const delIt = () => {
+        if (hit) { pushHistory(); setObjects((m) => { const c = { ...m }; delete c[hit.id]; return c; }); setSelected(null); setStatus(`Удалено: ${ASSETS[hit.t]?.name || hit.t}`); }
+        else { const z = hitZone(p); if (z) { pushHistory(); setZones((m) => { const c = { ...m }; delete c[z.id]; return c; }); setSelZone(null); setStatus(`Удалена зона: ${z.n}`); } }
+      };
+      if (isTouch) beginDrag({ kind: "tap", sx: ev.clientX, sy: ev.clientY, th: TH, fn: delIt }, pid);
+      else delIt();
       return;
     }
     if (hit) {
       setSelected(hit.id); setSelZone(null); pushHistory();
-      beginDrag({ kind: "move", id: hit.id, dx: p.x - hit.x, dy: p.y - hit.y, isFig: hit.t === "figA" || hit.t === "figB" });
+      beginDrag({
+        kind: "move", id: hit.id, dx: p.x - hit.x, dy: p.y - hit.y, isFig: hit.t === "figA" || hit.t === "figB",
+        orig: { x: hit.x, y: hit.y }, sx: ev.clientX, sy: ev.clientY, th: isTouch ? TH : 0,
+      }, pid);
       return;
     }
     const z = hitZone(p);
     if (z) {
+      /* Зоны большие и лежат под всем полем. Пальцем сначала выбираем
+         зону касанием, двигаем — только уже выбранную; иначе палец
+         по зоне двигает карту. */
+      if (isTouch && selZone !== z.id) {
+        beginDrag({ kind: "tap", sx: ev.clientX, sy: ev.clientY, th: TH, fn: () => { setSelZone(z.id); setSelected(null); } }, pid);
+        return;
+      }
       setSelZone(z.id); setSelected(null); pushHistory();
-      beginDrag({ kind: "moveZone", id: z.id, dx: p.x - z.x, dy: p.y - z.y });
+      beginDrag({ kind: "moveZone", id: z.id, dx: p.x - z.x, dy: p.y - z.y, orig: { x: z.x, y: z.y }, sx: ev.clientX, sy: ev.clientY, th: isTouch ? TH : 0 }, pid);
       return;
     }
-    if (bg && bg.visible && !bg.locked && hitBg(p)) {
+    if (bg && bg.visible && !bg.locked && (!isTouch || bgFinger) && hitBg(p)) {
       pushHistory();
-      beginDrag({ kind: "moveBg", dx: p.x - bg.x, dy: p.y - bg.y });
+      beginDrag({ kind: "moveBg", dx: p.x - bg.x, dy: p.y - bg.y, orig: { x: bg.x, y: bg.y } }, pid);
       return;
     }
     setSelected(null); setSelZone(null);
-    beginDrag({ kind: "pan", sx: ev.clientX, sy: ev.clientY, ox: v.cx, oy: v.cy });
+    beginDrag({ kind: "pan", sx: ev.clientX, sy: ev.clientY, ox: v.cx, oy: v.cy }, pid);
   };
 
   const onMoveIdle = (ev) => { if (!dragRef.current) setMouse(toWorld(ev.clientX, ev.clientY)); };
@@ -689,7 +886,7 @@ export default function CQBSelo() {
     const px = ev.clientX - r.left, py = ev.clientY - r.top;
     const v = viewRef.current;
     const wx = v.cx + px * v.mpp, wy = v.cy + py * v.mpp;
-    const mpp = Math.min(0.3, Math.max(0.008, v.mpp * (ev.deltaY > 0 ? 1.12 : 0.893)));
+    const mpp = Math.min(zoomMaxRef.current, Math.max(0.008, v.mpp * (ev.deltaY > 0 ? 1.12 : 0.893)));
     setView({ mpp, cx: wx - px * mpp, cy: wy - py * mpp });
   };
 
@@ -700,7 +897,18 @@ export default function CQBSelo() {
     setView({ mpp, cx: -padL - (boxSize.w * mpp - needW) / 2, cy: -padTop - (boxSize.h * mpp - needH) / 2 });
   }, [field, boxSize]);
 
-  useEffect(() => { fitView(); /* eslint-disable-next-line */ }, [boxSize.w, boxSize.h]);
+  /* На компьютере при изменении окна поле вписывается заново, как раньше.
+     На телефоне высота прыгает от клавиатуры и панелей браузера — там
+     сохраняем текущий масштаб и держим центр, а вписываем только при
+     смене ширины (поворот экрана) или раскладки. */
+  const lastBoxRef = useRef(null);
+  useEffect(() => {
+    const prev = lastBoxRef.current;
+    lastBoxRef.current = { w: boxSize.w, h: boxSize.h, compact };
+    if (!compact || !prev || prev.compact !== compact || Math.abs(prev.w - boxSize.w) > 40) { fitView(); return; }
+    setView((v) => ({ ...v, cx: v.cx + ((prev.w - boxSize.w) * v.mpp) / 2, cy: v.cy + ((prev.h - boxSize.h) * v.mpp) / 2 }));
+    /* eslint-disable-next-line */
+  }, [boxSize.w, boxSize.h]);
 
   /* Горячие клавиши. Слушаем code (физическую клавишу), а не key,
      иначе русская раскладка ломает H/V/Z. Фаза capture — чтобы
@@ -728,7 +936,7 @@ export default function CQBSelo() {
       else if (code === "KeyF") { e.preventDefault(); fitView(); }
       else if (code === "KeyG") { e.preventDefault(); setShowGrid((g) => !g); }
       else if (code === "Space") { e.preventDefault(); setTool("pan"); setStatus("Инструмент: панорама"); }
-      else if (code === "Escape") { setTool("select"); setSelected(null); setSelZone(null); setOpenMenu(null); setDialog(null); setPending(null); }
+      else if (code === "Escape") { setTool("select"); setSelected(null); setSelZone(null); setOpenMenu(null); setDialog(null); setPending(null); setSheet(null); }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
@@ -903,6 +1111,12 @@ export default function CQBSelo() {
     return { minor, major };
   }, [field]);
 
+  const deleteSelected = () => {
+    pushHistory();
+    if (selected) { setObjects((m) => { const c = { ...m }; delete c[selected]; return c; }); setSelected(null); }
+    else if (selZone) { setZones((m) => { const c = { ...m }; delete c[selZone]; return c; }); setSelZone(null); }
+  };
+
   const TOOLS = [
     ["select", "Выделить и двигать"], ["wallH", "Стена из тюков (Г)"], ["wallV", "Стена из тюков (В)"],
     ["place", "Поставить объект"], ["pan", "Панорама"], ["zone", "Нарисовать зону"], ["delete", "Удалить"],
@@ -922,12 +1136,7 @@ export default function CQBSelo() {
     ]},
     { label: "Правка", items: [
       { label: "Отменить", key: "Ctrl+Z", fn: undo, disabled: !history.length },
-      { label: "Удалить выбранное", key: "Del", disabled: !selected && !selZone,
-        fn: () => {
-          pushHistory();
-          if (selected) { setObjects((m) => { const c = { ...m }; delete c[selected]; return c; }); setSelected(null); }
-          else if (selZone) { setZones((m) => { const c = { ...m }; delete c[selZone]; return c; }); setSelZone(null); }
-        } },
+      { label: "Удалить выбранное", key: "Del", disabled: !selected && !selZone, fn: deleteSelected },
       { label: "Снять выделение", key: "Esc", fn: () => { setSelected(null); setSelZone(null); } }, "-",
       { label: "Сбросить к референсу", fn: resetMap },
     ]},
@@ -948,7 +1157,8 @@ export default function CQBSelo() {
       { label: "Выгрузить расчёт в CSV", fn: exportCSV },
     ]},
     { label: "Справка", items: [
-      { label: "Горячие клавиши…", fn: () => setDialog("keys") },
+      { label: compact ? "Управление пальцами…" : "Горячие клавиши…", fn: () => setDialog("keys") },
+      ...(compact ? [{ label: "Легенда…", fn: () => setDialog("legend") }] : []),
       { label: "О программе…", fn: () => setDialog("about") },
     ]},
   ];
@@ -957,132 +1167,18 @@ export default function CQBSelo() {
   const bgH = bg ? bg.w / bg.aspect : 0;
   const bgRot = bg ? (bg.rot || 0) : 0;
 
-  return (
-    <div style={{ ...ui, background: C.chrome, width: "100%", height: "100vh", overflow: "hidden", display: "flex", flexDirection: "column", userSelect: "none" }}
-      onPointerDown={() => setOpenMenu(null)}>
+  /* ---- общие куски интерфейса: одни и те же для компьютера и телефона ---- */
+  const fs = (n) => (compact ? n + 2.5 : n);
+  /* на телефоне пунктир выделения толще, иначе его не видно при мелком масштабе */
+  const ss = compact ? Math.max(1, view.mpp / 0.09) : 1;
+  const ghostFs = compact ? Math.max(1.1, 13 * view.mpp) : 1.1;
 
-      {/* ВЕРХ */}
-      <div style={{ display: "flex", alignItems: "stretch", borderBottom: `2px solid ${C.chromeLo}` }}>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: "flex", gap: 2, padding: "2px 6px" }} onPointerDown={(e) => e.stopPropagation()}>
-            {MENUS.map((m) => <Menu key={m.label} label={m.label} items={m.items} open={openMenu} setOpen={setOpenMenu} />)}
-          </div>
-          <div style={{ display: "flex", gap: 5, padding: "0 8px 6px", flexWrap: "wrap" }}>
-            <ChromeButton onClick={newMap}>Новая карта</ChromeButton>
-            <ChromeButton onClick={() => fileRef.current && fileRef.current.click()}>Файл</ChromeButton>
-            <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
-            <ChromeButton onClick={() => { refreshLibrary(); setDialog("library"); }}>Мои карты</ChromeButton>
-            <ChromeButton onClick={openShared}>Общие</ChromeButton>
-            <ChromeButton onClick={makeShareLink}>Ссылка</ChromeButton>
-            <ChromeButton onClick={() => imgRef.current && imgRef.current.click()}>Подложка</ChromeButton>
-            <ChromeButton onClick={undo} disabled={!history.length}>Отменить</ChromeButton>
-            <ChromeButton onClick={fitView}>Вписать</ChromeButton>
-            <ChromeButton onClick={resetMap}>Сброс к референсу</ChromeButton>
-            <input ref={fileRef} type="file" accept="application/json" onChange={loadMap} style={{ display: "none" }} />
-            <input ref={imgRef} type="file" accept="image/*" onChange={loadBg} style={{ display: "none" }} />
-          </div>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 16px", borderLeft: `2px solid ${C.chromeLo}`, background: "#DFDBCD" }}>
-          <svg width="46" height="34" viewBox="0 0 46 34">
-            <rect x="2" y="12" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
-            <rect x="2" y="21" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
-            <rect x="8" y="4" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
-            <circle cx="36" cy="20" r="9" fill="#2A2A2C" />
-            <circle cx="32.5" cy="18" r="2.6" fill="#DDD" /><circle cx="39.5" cy="18" r="2.6" fill="#DDD" />
-          </svg>
-          <div style={{ lineHeight: 1.05 }}>
-            <div style={{ font: "bold 20px Tahoma, sans-serif", letterSpacing: ".03em" }}>CQB СЕЛО</div>
-            <div style={{ font: "10px Tahoma, sans-serif", opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.2</div>
-          </div>
-        </div>
-      </div>
+  const hiddenInputs = (<>
+    <input ref={fileRef} type="file" accept=".json,application/json" onChange={loadMap} style={{ display: "none" }} />
+    <input ref={imgRef} type="file" accept="image/*" onChange={loadBg} style={{ display: "none" }} />
+  </>);
 
-      {/* РАБОЧАЯ ОБЛАСТЬ */}
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <div style={{ width: 196, flexShrink: 0, borderRight: `2px solid ${C.chromeLo}`, padding: 6, display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
-          {TOOLS.map(([k, label]) => (
-            <button key={k} type="button" onMouseUp={(e) => e.currentTarget.blur()}
-              onClick={() => { setTool(k); if (k === "zone") setDialog("zonekind"); }}
-              style={{
-                display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer",
-                background: tool === k ? "#C0CBE0" : C.chrome, textAlign: "left", ...ui,
-                borderTop: `2px solid ${tool === k ? C.chromeLo : C.chromeHi}`, borderLeft: `2px solid ${tool === k ? C.chromeLo : C.chromeHi}`,
-                borderBottom: `2px solid ${tool === k ? C.chromeHi : C.chromeLo}`, borderRight: `2px solid ${tool === k ? C.chromeHi : C.chromeLo}`,
-              }}>
-              <Bevel out={false} style={{ padding: 2, background: "#EFECE2", display: "flex" }}><ToolIcon kind={k} /></Bevel>
-              <span style={{ fontSize: 11.5 }}>{label}</span>
-            </button>
-          ))}
-
-          {tool === "zone" && (
-            <Bevel out={false} style={{ padding: 6, background: "#E6E3D8", display: "grid", gap: 3, marginTop: 2 }}>
-              <div style={{ fontSize: 10.5, opacity: 0.75, marginBottom: 2 }}>Тип новой зоны:</div>
-              {Object.keys(ZONE_KINDS).map((k) => (
-                <button key={k} type="button" onClick={() => setZoneKind(k)}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 7, padding: "2px 4px", cursor: "pointer", ...ui, fontSize: 11,
-                    background: zoneKind === k ? "#C0CBE0" : "transparent",
-                    border: zoneKind === k ? `1px solid ${C.sel}` : "1px solid transparent",
-                  }}>
-                  <span style={{ width: 20, height: 13, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}` }} />{ZONE_KINDS[k].label}
-                </button>
-              ))}
-            </Bevel>
-          )}
-
-          <div style={{ marginTop: 8 }}>
-            <PanelTitle>ПОСТРОЕНИЕ</PanelTitle>
-            <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
-              <Row label="Ширина, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
-              <Row label="Длина, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
-              <Row label="Сетка, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
-              <Row label="Привязка"><Select value={snap} onChange={(v) => setSnap(+v)} options={[[0.1, "0.1 м"], [0.5, "0.5 м"], [1, "1 м"], [2, "2 м"]]} /></Row>
-              <Row label="Ярусов"><Select value={tiers} onChange={(v) => setTiers(+v)} options={[[1, "1 (0.8 м)"], [2, "2 (1.6 м)"], [3, "3 (2.4 м)"]]} /></Row>
-              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
-                <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />Сетка
-              </label>
-            </Bevel>
-          </div>
-
-          {bg && (
-            <div style={{ marginTop: 6 }}>
-              <PanelTitle>ПОДЛОЖКА</PanelTitle>
-              <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
-                <div style={{ fontSize: 10.5, opacity: 0.8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bg.name}</div>
-                <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
-                  onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
-                <BgSlider label="Ширина" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
-                  onChange={(v) => setBg((b) => ({ ...b, w: v }))}
-                  extra={<div style={{ display: "flex", gap: 3 }}>
-                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
-                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
-                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, w: field.w }))}>= поле</ChromeButton>
-                  </div>} />
-                <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
-                  onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
-                  extra={<div style={{ display: "flex", gap: 3 }}>
-                    {[0, 90, 180, 270].map((a) => (
-                      <ChromeButton key={a} style={{ flex: 1, padding: "0 3px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}°</ChromeButton>
-                    ))}
-                  </div>} />
-                <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
-                  onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
-                <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
-                  onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
-                <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
-                  <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />Закрепить
-                </label>
-                <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 11.5 }}>
-                  <input type="checkbox" checked={!!bg.visible} onChange={(e) => setBg((b) => ({ ...b, visible: e.target.checked }))} />Показывать
-                </label>
-                <ChromeButton onClick={() => { pushHistory(); setBg(null); }}>Убрать подложку</ChromeButton>
-              </Bevel>
-            </div>
-          )}
-        </div>
-
-        {/* КАРТА */}
-        <div ref={wrapRef} style={{ flex: 1, minWidth: 320, position: "relative", background: "#EFEFEF", borderRight: `2px solid ${C.chromeLo}`, overflow: "hidden" }}>
+  const mapSvg = (
           <svg ref={svgRef} width="100%" height="100%" viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
             style={{ display: "block", touchAction: "none", cursor: tool === "pan" ? "grab" : tool === "select" ? "default" : "crosshair" }}
             onPointerDown={onPointerDown} onPointerMove={onMoveIdle} onWheel={onWheel} onContextMenu={(e) => e.preventDefault()}>
@@ -1107,7 +1203,7 @@ export default function CQBSelo() {
                 <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill || ZONE_KINDS[z.k].fill} stroke={ZONE_KINDS[z.k].stroke} strokeWidth={0.08} />
                 <text x={z.x + z.w / 2} y={z.y + z.h / 2} textAnchor="middle" fontSize={1.25} fill="#46523F" fontFamily="Tahoma, sans-serif"
                   transform={z.h > z.w * 1.6 ? `rotate(-90 ${z.x + z.w / 2} ${z.y + z.h / 2})` : undefined}>{z.n}</text>
-                {selZone === z.id && <rect x={z.x} y={z.y} width={z.w} height={z.h} fill="none" stroke={C.sel} strokeWidth={0.2} strokeDasharray="0.8 0.5" />}
+                {selZone === z.id && <rect x={z.x} y={z.y} width={z.w} height={z.h} fill="none" stroke={C.sel} strokeWidth={0.2 * ss} strokeDasharray={`${0.8 * ss} ${0.5 * ss}`} />}
               </g>
             ))}
 
@@ -1134,13 +1230,13 @@ export default function CQBSelo() {
               <g key={z.id}>
                 <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill || ZONE_KINDS[z.k].fill} stroke={ZONE_KINDS[z.k].stroke} strokeWidth={0.08} opacity={0.95} />
                 <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 0.6} textAnchor="middle" fontSize={1.8} fontWeight="bold" fill="#2B2B26" fontFamily="Tahoma, sans-serif" opacity={0.9}>{z.n}</text>
-                {selZone === z.id && <rect x={z.x} y={z.y} width={z.w} height={z.h} fill="none" stroke={C.sel} strokeWidth={0.2} strokeDasharray="0.8 0.5" />}
+                {selZone === z.id && <rect x={z.x} y={z.y} width={z.w} height={z.h} fill="none" stroke={C.sel} strokeWidth={0.2 * ss} strokeDasharray={`${0.8 * ss} ${0.5 * ss}`} />}
               </g>
             ))}
 
-            {Object.values(objects).filter((o) => o.t === "wallH" || o.t === "wallV").map((o) => <HayWall key={o.id} o={o} selected={o.id === selected} />)}
-            {Object.values(objects).filter((o) => ASSETS[o.t] && (ASSETS[o.t].cat === "prop" || ASSETS[o.t].cat === "mark")).map((o) => <Prop key={o.id} o={o} selected={o.id === selected} />)}
-            {Object.values(objects).filter((o) => o.t === "figA" || o.t === "figB").map((o) => <Figure key={o.id} o={o} selected={o.id === selected} />)}
+            {Object.values(objects).filter((o) => o.t === "wallH" || o.t === "wallV").map((o) => <HayWall key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
+            {Object.values(objects).filter((o) => ASSETS[o.t] && (ASSETS[o.t].cat === "prop" || ASSETS[o.t].cat === "mark")).map((o) => <Prop key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
+            {Object.values(objects).filter((o) => o.t === "figA" || o.t === "figB").map((o) => <Figure key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
 
             <rect x={0} y={0} width={field.w} height={field.h} fill="none" stroke="#141412" strokeWidth={0.18} />
 
@@ -1151,7 +1247,7 @@ export default function CQBSelo() {
               const y = horiz ? ghost.y0 : Math.min(ghost.y0, ghost.y1);
               return (<g>
                 <rect x={x} y={y} width={horiz ? len : BALE_T} height={horiz ? BALE_T : len} fill={C.hayFill} opacity={0.6} stroke={C.sel} strokeWidth={0.1} />
-                <text x={x + (horiz ? len / 2 : 1.4)} y={y - 0.4} fontSize={1.1} fill={C.sel} textAnchor="middle" fontFamily="Tahoma, sans-serif">{r1(len)} м · {baleCount(len, tiers)} тюк.</text>
+                <text x={x + (horiz ? len / 2 : 1.4)} y={y - 0.4} fontSize={ghostFs} fill={C.sel} textAnchor="middle" fontFamily="Tahoma, sans-serif">{r1(len)} м · {baleCount(len, tiers)} тюк.</text>
               </g>);
             })()}
             {ghost && ghost.kind === "zone" && (
@@ -1190,74 +1286,105 @@ export default function CQBSelo() {
               ))}
             </g>
           </svg>
+  );
 
-          <div style={{ position: "absolute", right: 8, bottom: 8, display: "flex", gap: 4 }} onPointerDown={(e) => e.stopPropagation()}>
-            <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.max(0.008, v.mpp * 0.83) }))}>+</ChromeButton>
-            <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.min(0.3, v.mpp * 1.2) }))}>−</ChromeButton>
-            <ChromeButton onClick={fitView}>Вписать</ChromeButton>
-          </div>
-          {tool === "pan" && (
-            <div style={{ position: "absolute", left: 8, top: 8, background: "rgba(255,255,255,.88)", border: `1px solid ${C.chromeLo}`, padding: "3px 8px", fontSize: 11 }}>
-              Тяните карту мышью. Колесо — зум. Пробел включает панораму из любого инструмента.
-            </div>
-          )}
-        </div>
+  const buildInner = (<>
+              <Row label="Ширина, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
+              <Row label="Длина, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
+              <Row label="Сетка, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
+              <Row label="Привязка"><Select value={snap} onChange={(v) => setSnap(+v)} options={[[0.1, "0.1 м"], [0.5, "0.5 м"], [1, "1 м"], [2, "2 м"]]} /></Row>
+              <Row label="Ярусов"><Select value={tiers} onChange={(v) => setTiers(+v)} options={[[1, "1 (0.8 м)"], [2, "2 (1.6 м)"], [3, "3 (2.4 м)"]]} /></Row>
+              <Check checked={showGrid} onChange={setShowGrid}>Сетка</Check>
+  </>);
 
-        {/* ПРАВАЯ ПАНЕЛЬ */}
-        <div style={{ width: 236, flexShrink: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}>
-          <PanelTitle>БИБЛИОТЕКА ОБЪЕКТОВ</PanelTitle>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, padding: 5 }}>
+  const bgInner = bg ? (<>
+                <div style={{ fontSize: fs(10.5), opacity: 0.8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{bg.name}</div>
+                <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
+                  onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
+                <BgSlider label="Ширина" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
+                  onChange={(v) => setBg((b) => ({ ...b, w: v }))}
+                  extra={<div style={{ display: "flex", gap: 3 }}>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: fs(10.5) }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: fs(10.5) }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
+                    <ChromeButton style={{ flex: 1, padding: "0 4px", fontSize: fs(10.5) }} onClick={() => setBg((b) => ({ ...b, w: field.w }))}>= поле</ChromeButton>
+                  </div>} />
+                <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
+                  onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
+                  extra={<div style={{ display: "flex", gap: 3 }}>
+                    {[0, 90, 180, 270].map((a) => (
+                      <ChromeButton key={a} style={{ flex: 1, padding: "0 3px", fontSize: fs(10.5) }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}°</ChromeButton>
+                    ))}
+                  </div>} />
+                <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
+                  onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
+                <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
+                  onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
+                <Check checked={!!bg.locked} onChange={(v) => setBg((b) => ({ ...b, locked: v }))}>Закрепить</Check>
+                <Check checked={!!bg.visible} onChange={(v) => setBg((b) => ({ ...b, visible: v }))}>Показывать</Check>
+                {compact && !bg.locked && (
+                  <Check checked={bgFinger} onChange={setBgFinger}>Двигать подложку пальцем</Check>
+                )}
+                <ChromeButton onClick={() => { pushHistory(); setBg(null); }}>Убрать подложку</ChromeButton>
+  </>) : null;
+
+  const assetGrid = (cols) => (
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: compact ? 6 : 4, padding: compact ? 0 : 5 }}>
             {Object.keys(ASSETS).map((k) => {
               const isTool = k === "wallH" || k === "wallV";
               const active = isTool ? tool === k : tool === "place" && asset === k;
               return (
                 <button key={k} type="button" title={ASSETS[k].name}
-                  onClick={() => { if (isTool) setTool(k); else { setAsset(k); setTool("place"); } }}
-                  style={{ background: active ? "#C0CBE0" : "#F2F0E8", padding: 3, cursor: "pointer", ...ui, border: active ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}` }}>
+                  onClick={() => {
+                    if (isTool) setTool(k); else { setAsset(k); setTool("place"); }
+                    if (compact) {
+                      setSheet(null);
+                      setStatus(isTool ? "Проведите пальцем по карте — появится стена" : `Выбрано для установки: ${ASSETS[k].name}`);
+                    }
+                  }}
+                  style={{ background: active ? "#C0CBE0" : "#F2F0E8", padding: compact ? "6px 3px" : 3, cursor: "pointer", touchAction: "manipulation", ...ui, border: active ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}` }}>
                   <AssetThumb t={k} />
-                  <div style={{ fontSize: 10, textAlign: "center", marginTop: 1 }}>{ASSETS[k].name}</div>
+                  <div style={{ fontSize: fs(10), textAlign: "center", marginTop: 1 }}>{ASSETS[k].name}</div>
                 </button>
               );
             })}
           </div>
+  );
 
-          <PanelTitle>СВОЙСТВА</PanelTitle>
-          <Bevel out={false} style={{ margin: 5, padding: 7, background: "#E6E3D8", display: "grid", gap: 5 }}>
-            {sel ? (<>
+  const propsInner = (
+            sel ? (<>
               <Row label="Объект"><Static>{(ASSETS[sel.t] && ASSETS[sel.t].name) || sel.t}</Static></Row>
               <Row label="X, м"><NumIn value={sel.x} step={snap} onChange={(v) => updateSel({ x: v })} /></Row>
               <Row label="Y, м"><NumIn value={sel.y} step={snap} onChange={(v) => updateSel({ y: v })} /></Row>
               {sel.l != null && <Row label="Длина, м"><NumIn value={sel.l} min={0.5} step={snap} onChange={(v) => updateSel({ l: v })} /></Row>}
               {sel.tiers != null && <Row label="Ярусов"><Select value={sel.tiers} onChange={(v) => updateSel({ tiers: +v })} options={[[1, "1"], [2, "2"], [3, "3"]]} /></Row>}
               {sel.l != null && <Row label="Тюков"><Static>{baleCount(sel.l, sel.tiers)}</Static></Row>}
-              <ChromeButton onClick={() => { pushHistory(); setObjects((m) => { const c = { ...m }; delete c[selected]; return c; }); setSelected(null); }}>Удалить объект</ChromeButton>
+              <ChromeButton onClick={deleteSelected}>Удалить объект</ChromeButton>
             </>) : zsel ? (<>
-              <div style={{ fontSize: 11.5 }}>Название зоны</div>
+              <div style={{ fontSize: fs(11.5) }}>Название зоны</div>
               <input value={zsel.n} onChange={(e) => updateZone(zsel.id, { n: e.target.value })}
-                style={{ width: "100%", background: "#fff", border: "1px solid #9A9684", padding: "2px 5px", font: "12px Tahoma, sans-serif" }} />
-              <div style={{ fontSize: 11.5, marginTop: 2 }}>Тип</div>
+                style={{ width: "100%", background: "#fff", border: "1px solid #9A9684", padding: "2px 5px", font: `${fs(12)}px Tahoma, sans-serif` }} />
+              <div style={{ fontSize: fs(11.5), marginTop: 2 }}>Тип</div>
               <select value={zsel.k} onChange={(e) => updateZone(zsel.id, { k: e.target.value })}
-                style={{ width: "100%", background: "#fff", border: "1px solid #9A9684", font: "12px Tahoma, sans-serif" }}>
+                style={{ width: "100%", background: "#fff", border: "1px solid #9A9684", font: `${fs(12)}px Tahoma, sans-serif` }}>
                 {Object.keys(ZONE_KINDS).map((k) => <option key={k} value={k}>{ZONE_KINDS[k].label}</option>)}
               </select>
               {zsel.k === "custom" && (
                 <Row label="Цвет">
                   <input type="color" value={zsel.fill || ZONE_KINDS.custom.fill} onChange={(e) => updateZone(zsel.id, { fill: e.target.value })}
-                    style={{ width: 66, height: 22, padding: 0, border: "1px solid #9A9684" }} />
+                    style={{ width: compact ? 96 : 66, height: compact ? 36 : 22, padding: 0, border: "1px solid #9A9684" }} />
                 </Row>
               )}
               <Row label="X, м"><NumIn value={zsel.x} step={snap} onChange={(v) => updateZone(zsel.id, { x: v })} /></Row>
               <Row label="Y, м"><NumIn value={zsel.y} step={snap} onChange={(v) => updateZone(zsel.id, { y: v })} /></Row>
               <Row label="Ширина, м"><NumIn value={zsel.w} min={0.5} step={snap} onChange={(v) => updateZone(zsel.id, { w: v })} /></Row>
               <Row label="Высота, м"><NumIn value={zsel.h} min={0.5} step={snap} onChange={(v) => updateZone(zsel.id, { h: v })} /></Row>
-              <ChromeButton onClick={() => { pushHistory(); setZones((m) => { const c = { ...m }; delete c[selZone]; return c; }); setSelZone(null); }}>Удалить зону</ChromeButton>
+              <ChromeButton onClick={deleteSelected}>Удалить зону</ChromeButton>
             </>) : (
-              <div style={{ fontSize: 11, opacity: 0.7 }}>Ничего не выбрано. Возьмите «Выделить и двигать» и щёлкните по объекту или зоне.</div>
-            )}
-          </Bevel>
+              <div style={{ fontSize: fs(11), opacity: 0.7 }}>{compact ? "Ничего не выбрано. Возьмите «Выбор» и коснитесь объекта или зоны на карте." : "Ничего не выбрано. Возьмите «Выделить и двигать» и щёлкните по объекту или зоне."}</div>
+            )
+  );
 
-          <PanelTitle>ЛЕГЕНДА</PanelTitle>
-          <Bevel out={false} style={{ margin: 5, padding: 7, background: "#FFFFFF", display: "grid", gap: 5 }}>
+  const legendInner = (<>
             <LegendRow label="Стена из тюков"><svg width="34" height="16" viewBox="0 0 34 16"><rect x="1" y="3" width="32" height="10" fill={C.hayFill} stroke={C.hayEdge} /><path d="M3 6h28M3 8.5h28M3 11h28" stroke={C.hayLine} /></svg></LegendRow>
             <LegendRow label="Колонна из тюков"><svg width="34" height="16" viewBox="0 0 34 16"><rect x="11" y="2" width="12" height="12" fill={C.hayFill} stroke={C.hayEdge} /><path d="M13 5h8M13 8h8M13 11h8" stroke={C.hayLine} /></svg></LegendRow>
             <LegendRow label="Проход / дверь"><svg width="34" height="16" viewBox="0 0 34 16"><path d="M4 3v10M30 3v10" stroke="#111" strokeWidth="1.4" /><path d="M8 8h18M8 8l3-2.5M8 8l3 2.5M26 8l-3-2.5M26 8l-3 2.5" stroke="#111" fill="none" /></svg></LegendRow>
@@ -1268,6 +1395,754 @@ export default function CQBSelo() {
             <LegendRow label="Покрышки"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="6.5" fill={C.rubber} /><circle cx="17" cy="8" r="2.6" fill="#70707A" /></svg></LegendRow>
             <LegendRow label="Бочка"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="6" fill={C.steel} stroke="#111" /><circle cx="17" cy="8" r="3" fill="none" stroke="#93939A" /></svg></LegendRow>
             <LegendRow label="Игрок, 1.8 м"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="5" r="3" fill={C.teamA} stroke="#111" /><path d="M17 8c-3.4 0-5 2.4-5 5.5h10C22 10.4 20.4 8 17 8z" fill={C.teamA} stroke="#111" /></svg></LegendRow>
+  </>);
+
+  const baleTable = (
+            <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
+              <thead><tr style={{ background: "#EDEBE2" }}>
+                <Th>Тип секции</Th><Th right>Секций</Th><Th right>Ярусов</Th><Th right>Тюков в секции</Th><Th right>Всего</Th>
+              </tr></thead>
+              <tbody>
+                {stats.rows.map((r, i) => (
+                  <tr key={i} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
+                    <Td>Стена {r.len} м</Td><Td right>{r.n}</Td><Td right>{r.tiers}</Td><Td right>{r.per}</Td><Td right><b>{r.total}</b></Td>
+                  </tr>
+                ))}
+                {stats.colBales > 0 && <tr style={{ background: "#F7F6F1" }}><Td>Колонны</Td><Td right>{stats.columns.length}</Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.colBales}</b></Td></tr>}
+                {stats.stackBales > 0 && <tr><Td>Штабели</Td><Td right>{stats.stacks.length}</Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.stackBales}</b></Td></tr>}
+                <tr style={{ background: "#DDE6D6", borderTop: `2px solid ${C.chromeLo}` }}>
+                  <Td><b>Итого</b></Td><Td right><b>{stats.walls.length}</b></Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.totalBales}</b></Td>
+                </tr>
+              </tbody>
+            </table>
+  );
+
+  const dialogs = (<>
+      {/* ДИАЛОГИ */}
+      {pending && (
+        <Modal title="Новая зона" onClose={() => setPending(null)}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <div style={{ fontSize: fs(12) }}>Размер: {r1(pending.w)} × {r1(pending.h)} м</div>
+            <div style={{ fontSize: fs(12) }}>Название</div>
+            <input autoFocus={!compact} value={pending.n} placeholder={ZONE_KINDS[pending.k].label}
+              onChange={(e) => setPending((p) => ({ ...p, n: e.target.value }))}
+              style={{ background: "#fff", border: "1px solid #9A9684", padding: "3px 6px", font: `${fs(12)}px Tahoma, sans-serif` }} />
+            <div style={{ fontSize: fs(12) }}>Тип зоны</div>
+            <div style={{ display: "grid", gridTemplateColumns: compact && vp.w < 380 ? "1fr" : "1fr 1fr", gap: compact ? 5 : 3 }}>
+              {Object.keys(ZONE_KINDS).map((k) => (
+                <button key={k} type="button" onClick={() => setPending((p) => ({ ...p, k }))}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 6, padding: compact ? "9px 6px" : "3px 5px", cursor: "pointer",
+                    font: `${fs(11.5)}px Tahoma, sans-serif`, background: pending.k === k ? "#C0CBE0" : "#F2F0E8",
+                    border: pending.k === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`, textAlign: "left",
+                  }}>
+                  <span style={{ width: 18, height: 12, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}`, flexShrink: 0 }} />
+                  {ZONE_KINDS[k].label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
+              <ChromeButton onClick={() => setPending(null)}>Отмена</ChromeButton>
+              <ChromeButton onClick={() => {
+                const id = uid("z");
+                const name = pending.n.trim() || ZONE_KINDS[pending.k].label;
+                setZones((m) => ({ ...m, [id]: { id, k: pending.k, n: name, x: pending.x, y: pending.y, w: pending.w, h: pending.h, score: 0 } }));
+                setSelZone(id); setSelected(null); setPending(null);
+                setStatus(`Зона «${name}» создана`);
+              }}>Создать зону</ChromeButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "library" && (
+        <Modal title="Мои карты" onClose={() => setDialog(null)} width={480}>
+          <div style={{ display: "grid", gap: 10 }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input value={mapName} onChange={(e) => setMapName(e.target.value)} placeholder="Название карты"
+                style={{ flex: 1, background: "#fff", border: "1px solid #9A9684", padding: "3px 6px", font: `${fs(12)}px Tahoma, sans-serif` }} />
+              <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
+            </div>
+            {library.length === 0 ? (
+              <div style={{ fontSize: fs(11.5), opacity: 0.75, padding: "6px 0" }}>
+                Сохранённых карт пока нет. Впишите название и нажмите «Сохранить» — карта останется в этом браузере.
+              </div>
+            ) : (
+              compact ? (
+                <div style={{ display: "grid", gap: 6 }}>
+                  {library.map((m) => (
+                    <Bevel key={m.key} out={false} style={{ background: "#fff", padding: 8, display: "grid", gap: 6 }}>
+                      <div style={{ fontWeight: "bold", overflowWrap: "anywhere" }}>{m.name}</div>
+                      <div style={{ fontSize: 12.5, opacity: 0.7 }}>{m.at ? new Date(m.at).toLocaleString("ru-RU") : ""} · {Math.round(m.size / 1024)} КБ</div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <ChromeButton style={{ flex: 1 }} onClick={() => loadFromLibrary(m.key)}>Открыть</ChromeButton>
+                        <ChromeButton style={{ flex: 1 }} onClick={() => deleteFromLibrary(m.key, m.name)}>Удалить</ChromeButton>
+                      </div>
+                    </Bevel>
+                  ))}
+                </div>
+              ) : (
+              <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
+                    <tbody>
+                      {library.map((m, i) => (
+                        <tr key={m.key} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
+                          <Td>{m.name}</Td>
+                          <Td>{m.at ? new Date(m.at).toLocaleString("ru-RU") : ""}</Td>
+                          <Td right>{Math.round(m.size / 1024)} КБ</Td>
+                          <Td right><span style={{ display: "inline-flex", gap: 4 }}>
+                            <ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadFromLibrary(m.key)}>Открыть</ChromeButton>
+                            <ChromeButton style={{ padding: "1px 7px" }} onClick={() => deleteFromLibrary(m.key, m.name)}>Удалить</ChromeButton>
+                          </span></Td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            )}
+            <div style={{ fontSize: fs(11), opacity: 0.75, lineHeight: 1.5 }}>
+              Карты лежат в этом браузере на этом устройстве. Друзья своих карт здесь не увидят — чтобы передать карту,
+              сделайте ссылку через {compact ? "«Меню → Ссылка для друзей»" : "«Файл → Ссылка для друзей»"} или сохраните файлом JSON.
+              Очистка данных сайта в браузере удалит список.
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "shared" && (
+        <Modal title="Общие карты с сайта" onClose={() => setDialog(null)} width={490}>
+          <div style={{ display: "grid", gap: 9 }}>
+            {shared.state === "loading" && <div style={{ fontSize: fs(12) }}>Читаю папку maps…</div>}
+            {shared.state === "err" && (
+              <div style={{ fontSize: fs(11.5), lineHeight: 1.6 }}>
+                Список не загрузился: {shared.err}.<br />
+                Такое бывает, если приложение открыто файлом с диска, а не по ссылке сайта,
+                либо папки maps в репозитории ещё нет.
+              </div>
+            )}
+            {shared.state === "ok" && shared.list.length === 0 && (
+              <div style={{ fontSize: fs(11.5) }}>Папка maps пустая. Положите туда файлы карт .json.</div>
+            )}
+            {shared.state === "ok" && shared.list.length > 0 && (
+              <div style={{ maxHeight: 300, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
+                  <tbody>
+                    {shared.list.map((m, i) => (
+                      <tr key={m.url} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
+                        <Td>{m.name}{m.author ? <span style={{ opacity: 0.6 }}> · {m.author}</span> : null}</Td>
+                        <Td right>{m.size ? Math.round(m.size / 1024) + " КБ" : ""}</Td>
+                        <Td right><ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadShared(m)}>Открыть</ChromeButton></Td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {shared.state === "ok" && shared.err && <div style={{ fontSize: fs(11.5), color: "#9A2A2A" }}>{shared.err}</div>}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: fs(11), opacity: 0.75 }}>Карты лежат в папке maps репозитория сайта.</span>
+              <ChromeButton onClick={openShared}>Обновить</ChromeButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "share" && (
+        <Modal title="Ссылка для друзей" onClose={() => setDialog(null)} width={470}>
+          <div style={{ display: "grid", gap: 9, fontSize: fs(12) }}>
+            {shareUrl ? (<>
+              <div>Вся карта упакована внутрь адреса. Кто откроет ссылку, увидит эту планировку.</div>
+              <textarea readOnly value={shareUrl} rows={5} onFocus={(e) => e.target.select()}
+                style={{ width: "100%", font: "11px Consolas, monospace", border: "1px solid #9A9684", padding: 5, resize: "vertical" }} />
+              <div style={{ display: "flex", gap: 6, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: fs(11), opacity: 0.75 }}>{shareNote}</span>
+                {typeof navigator !== "undefined" && navigator.share && (
+                  <ChromeButton onClick={() => {
+                    navigator.share({ title: `CQB СЕЛО — ${mapName}`, url: shareUrl }).catch(() => {});
+                  }}>Поделиться…</ChromeButton>
+                )}
+                <ChromeButton onClick={() => {
+                  if (navigator.clipboard) navigator.clipboard.writeText(shareUrl).then(
+                    () => setShareNote("Ссылка скопирована"), () => setShareNote("Скопируйте вручную: выделите текст выше"));
+                  else setShareNote("Скопируйте вручную: выделите текст выше");
+                }}>Скопировать</ChromeButton>
+              </div>
+            </>) : (
+              <div>{shareNote || "Собираю ссылку…"}</div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "zonekind" && (
+        <Modal title="Тип зоны для рисования" onClose={() => setDialog(null)} width={340}>
+          <div style={{ display: "grid", gap: 4 }}>
+            <div style={{ fontSize: fs(11.5), opacity: 0.8, marginBottom: 4 }}>Выберите тип, затем протяните рамку на карте. Название спросим после.</div>
+            {Object.keys(ZONE_KINDS).map((k) => (
+              <button key={k} type="button" onClick={() => { setZoneKind(k); setDialog(null); }}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8, padding: compact ? "10px 8px" : "5px 7px", cursor: "pointer",
+                  font: `${fs(12)}px Tahoma, sans-serif`, background: zoneKind === k ? "#C0CBE0" : "#F2F0E8",
+                  border: zoneKind === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`, textAlign: "left",
+                }}>
+                <span style={{ width: 26, height: 15, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}` }} />
+                {ZONE_KINDS[k].label}
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "bg" && bg && (
+        <Modal title="Подложка" onClose={() => setDialog(null)} width={400}>
+          <div style={{ display: "grid", gap: 8, fontSize: fs(12) }}>
+            <div style={{ opacity: 0.8 }}>{bg.name}</div>
+            <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
+              onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
+            <BgSlider label="Ширина картинки" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
+              onChange={(v) => setBg((b) => ({ ...b, w: v }))}
+              extra={<div style={{ display: "flex", gap: 4 }}>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: fs(11) }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 25) / 100) }))}>÷4</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: fs(11) }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: fs(11) }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
+                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: fs(11) }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 400) / 100 }))}>×4</ChromeButton>
+              </div>} />
+            <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
+              onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
+              extra={<div style={{ display: "flex", gap: 4, flexWrap: compact ? "wrap" : "nowrap" }}>
+                {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
+                  <ChromeButton key={a} style={{ flex: compact ? "1 0 60px" : 1, padding: "0 3px", fontSize: fs(10.5) }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}</ChromeButton>
+                ))}
+              </div>} />
+            <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
+              onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
+            <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
+              onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
+            <Check checked={!!bg.locked} onChange={(v) => setBg((b) => ({ ...b, locked: v }))}>
+              {compact ? "Закрепить" : "Закрепить (иначе двигается мышью инструментом «Выделить»)"}
+            </Check>
+            {compact && !bg.locked && (
+              <Check checked={bgFinger} onChange={setBgFinger}>Двигать подложку пальцем по карте</Check>
+            )}
+            <div style={{ fontSize: fs(11), opacity: 0.75 }}>
+              Как совместить: подберите ширину так, чтобы известный объект на снимке совпал по длине с сеткой, поворотом разверните снимок по осям поля, затем сдвиньте картинку. Мелкая сетка — 1 м. Ширина не ограничена сверху: ползунок логарифмический, точное число можно вписать руками, кнопки ×2 и ÷2 меняют масштаб скачком.
+            </div>
+            <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
+              <ChromeButton onClick={() => setBg((b) => ({ ...b, x: 0, y: 0, w: field.w }))}>Вписать в поле</ChromeButton>
+              <ChromeButton onClick={() => setDialog(null)}>Готово</ChromeButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "field" && (
+        <Modal title="Размер поля и сетка" onClose={() => setDialog(null)} width={320}>
+          <div style={{ display: "grid", gap: 8 }}>
+            <Row label="Ширина поля, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
+            <Row label="Длина поля, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
+            <Row label="Шаг сетки, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
+            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+              <ChromeButton onClick={() => { fitView(); setDialog(null); }}>Готово</ChromeButton>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "price" && (
+        <Modal title="Цена тюка" onClose={() => setDialog(null)} width={330}>
+          <div style={{ display: "grid", gap: 8, fontSize: fs(12) }}>
+            <Row label="Цена одного тюка, ₽"><NumIn value={price} min={0} step={10} onChange={setPrice} width={90} /></Row>
+            <div>Тюков в проекте: <b>{stats.totalBales}</b></div>
+            <div>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></div>
+            <div style={{ fontSize: fs(11), opacity: 0.75 }}>Цена относится к тюку {BALE_L} × {BALE_T} м. Поддоны, покрышки и бочки в смету не входят — их количество показано под таблицей.</div>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}><ChromeButton onClick={() => setDialog(null)}>Готово</ChromeButton></div>
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "keys" && compact && (
+        <Modal title="Управление пальцами" onClose={() => setDialog(null)} width={420}>
+          <div style={{ display: "grid", gap: 8 }}>
+            {[["Два пальца", "Приблизить, отдалить и сдвинуть карту — с любым инструментом"],
+              ["Палец по пустому месту", "Сдвинуть карту (инструмент «Выбор» или «Панорама»)"],
+              ["Касание объекта", "Выделить. Тяните — объект поедет за пальцем"],
+              ["Касание зоны", "Выделить. Уже выбранную зону можно тянуть"],
+              ["Стена Г / Стена В / Зона", "Проведите пальцем по карте"],
+              ["Объект / Удалить", "Коснитесь нужного места на карте"],
+              ["Кнопка ↶ вверху", "Отменить последнее действие"]].map(([k, v]) => (
+              <div key={k} style={{ display: "grid", gap: 1, borderBottom: "1px solid #CFCBBE", paddingBottom: 6 }}>
+                <b>{k}</b><span style={{ opacity: 0.85 }}>{v}</span>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "keys" && !compact && (
+        <Modal title="Горячие клавиши" onClose={() => setDialog(null)} width={370}>
+          <table style={{ width: "100%", font: `${fs(12)}px Tahoma, sans-serif`, borderCollapse: "collapse" }}>
+            <tbody>
+              {[["H", "Горизонтальная стена"], ["V", "Вертикальная стена"], ["Пробел", "Панорама"],
+                ["Shift + тяга", "Панорама из любого инструмента"], ["Правая кнопка", "Панорама"],
+                ["Колесо", "Зум к курсору"], ["Del", "Удалить выбранное"], ["Ctrl + Z", "Отменить"],
+                ["Esc", "Сбросить инструмент"]].map(([k, v]) => (
+                <tr key={k}><td style={{ padding: "3px 10px 3px 0", whiteSpace: "nowrap" }}><b>{k}</b></td><td style={{ padding: "3px 0" }}>{v}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        </Modal>
+      )}
+
+      {dialog === "about" && (
+        <Modal title="О программе" onClose={() => setDialog(null)} width={380}>
+          <div style={{ fontSize: fs(12), display: "grid", gap: 7 }}>
+            <div style={{ font: `bold ${fs(16)}px Tahoma, sans-serif` }}>CQB СЕЛО · планировщик поля v1.3</div>
+            <div>Планировка CQB-полигона из тюков сена с расчётом количества тюков и сметы.</div>
+            <div>Тюк {BALE_L} × {BALE_T} м. Все координаты в метрах, сетка метрическая.</div>
+            <div>Поле до 1000 м. Подложка тянется без верхнего предела и крутится на любой угол 0…360°.</div>
+            <div style={{ opacity: 0.75 }}>Карты сохраняются в JSON на ваш компьютер. Ничего никуда не отправляется, работает без интернета.</div>
+            <div style={{ opacity: 0.75 }}>На телефоне панели открываются кнопками внизу экрана, карта двигается и масштабируется пальцами.</div>
+          </div>
+        </Modal>
+      )}
+      {dialog === "menu" && (
+        <Modal title="Меню" onClose={() => setDialog(null)} width={440}>
+          <div style={{ display: "grid", gap: 10 }}>
+            {MENUS.map((m) => (
+              <div key={m.label}>
+                <PanelTitle>{m.label}</PanelTitle>
+                <Bevel out={false} style={{ background: "#F2F0E8", display: "grid" }}>
+                  {m.items.filter((it) => it !== "-").map((it, i) => {
+                    const info = it.disabled && !it.fn;
+                    const hint = it.key && !/^(Ctrl|Del|Esc)/.test(it.key) ? it.key : "";
+                    return (
+                      <button key={i} type="button" disabled={it.disabled}
+                        onClick={() => { setDialog(null); if (it.fn) it.fn(); }}
+                        style={{
+                          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+                          minHeight: 44, padding: "8px 12px", background: "transparent", border: "none",
+                          borderTop: i ? "1px solid #DDD9CC" : "none", textAlign: "left", cursor: it.disabled ? "default" : "pointer",
+                          font: `${info ? "bold " : ""}15px Tahoma, sans-serif`, color: it.disabled && !info ? "#8C8878" : C.ink,
+                          touchAction: "manipulation",
+                        }}>
+                        <span>{it.on != null ? (it.on ? "☑ " : "☐ ") : ""}{it.label}</span>
+                        {hint ? <span style={{ opacity: 0.55, fontSize: 13 }}>{hint}</span> : null}
+                      </button>
+                    );
+                  })}
+                </Bevel>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
+
+      {dialog === "legend" && (
+        <Modal title="Легенда" onClose={() => setDialog(null)} width={380}>
+          <div style={{ display: "grid", gap: 7 }}>{legendInner}</div>
+        </Modal>
+      )}
+  </>);
+
+  /* ======================= ТЕЛЕФОННАЯ РАСКЛАДКА =======================
+     Сверху — меню, название и «отменить / вписать». Почти весь экран —
+     карта. Снизу — инструменты и вкладки панелей; панель выезжает
+     листом поверх карты (снизу в портрете, справа в альбомной ориентации),
+     так размер карты не меняется и масштаб не сбрасывается. */
+  if (compact) {
+    const landscape = vp.w > vp.h && vp.w >= 600;
+    const oneRow = vp.w >= 640;
+    /* narrow — самые узкие телефоны (320–369 px): подписи короче и мельче,
+       чтобы все семь инструментов влезли без прокрутки.
+       low — низкий экран в альбомной ориентации: ужимаем верх и низ. */
+    const narrow = vp.w < 370;
+    const low = vp.h < 430;
+    const barH = low ? 46 : 54;
+    const SHORT = { select: "Выбор", wallH: "Стена Г", wallV: "Стена В", place: "Объект", pan: narrow ? "Сдвиг" : "Панорама", zone: "Зона", delete: "Удалить" };
+    const SHEETS = [["objects", "Объекты"], ["props", "Свойства"], ["field", "Поле"], ["calc", "Расчёт"], ["zones", "Зоны"]];
+    const SHEET_TITLE = { objects: "Библиотека объектов", props: "Свойства", field: "Поле и подложка", calc: "Расчёт тюков и смета", zones: "Зоны и счёт" };
+    const bevelBtn = (on) => ({
+      borderTop: `2px solid ${on ? C.chromeLo : C.chromeHi}`, borderLeft: `2px solid ${on ? C.chromeLo : C.chromeHi}`,
+      borderBottom: `2px solid ${on ? C.chromeHi : C.chromeLo}`, borderRight: `2px solid ${on ? C.chromeHi : C.chromeLo}`,
+    });
+    const pickTool = (k) => {
+      setTool(k);
+      if (k === "zone") setDialog("zonekind");
+      setSheet(k === "place" ? "objects" : null);
+    };
+    const toggleSheet = (k) => setSheet((cur) => (cur === k ? null : k));
+
+    const selText = sel
+      ? `${(ASSETS[sel.t] && ASSETS[sel.t].name) || sel.t}${sel.l != null ? ` · ${r1(sel.l)} м · ${baleCount(sel.l, sel.tiers)} тюк.` : ""}`
+      : zsel ? `Зона «${zsel.n}» · ${r1(zsel.w)} × ${r1(zsel.h)} м` : "";
+
+    let hint = "";
+    if (ghost && ghost.kind === "draw") {
+      const len = Math.abs(ghost.dir === "wallH" ? ghost.x1 - ghost.x0 : ghost.y1 - ghost.y0);
+      hint = `Стена ${r1(len)} м · ${baleCount(len, tiers)} тюк.`;
+    } else if (ghost && ghost.kind === "zone") {
+      hint = `Зона ${r1(Math.abs(ghost.x1 - ghost.x0))} × ${r1(Math.abs(ghost.y1 - ghost.y0))} м`;
+    } else if (tool === "wallH") hint = "Проведите пальцем по карте — горизонтальная стена";
+    else if (tool === "wallV") hint = "Проведите пальцем по карте — вертикальная стена";
+    else if (tool === "place") hint = `Коснитесь карты — поставить «${ASSETS[asset].name}»`;
+    else if (tool === "zone") hint = `Протяните рамку: ${ZONE_KINDS[zoneKind].label}`;
+    else if (tool === "delete") hint = "Коснитесь объекта или зоны, чтобы удалить";
+    else if (tool === "pan") hint = "Тяните карту пальцем, двумя — зум";
+
+    const chip = {
+      display: "flex", alignItems: "center", gap: 6, maxWidth: "100%", minWidth: 0,
+      background: "rgba(255,255,255,.94)", border: `1px solid ${C.chromeLo}`, boxShadow: "2px 2px 0 rgba(0,0,0,.18)",
+      padding: "4px 6px 4px 9px", fontSize: 13.5, pointerEvents: "auto",
+    };
+
+    const sheetBody = sheet === "objects" ? (
+      <div style={{ display: "grid", gap: 8 }}>
+        {assetGrid(vp.w < 400 ? 3 : 4)}
+        <div style={{ fontSize: 12.5, opacity: 0.75 }}>
+          Выберите объект — лист закроется, и объект встанет туда, куда вы коснётесь. Стены рисуются протяжкой пальца.
+          Ярусы новых стен и колонн задаются во вкладке «Поле».
+        </div>
+      </div>
+    ) : sheet === "props" ? (
+      <Bevel out={false} style={{ padding: 10, background: "#E6E3D8", display: "grid", gap: 8 }}>{propsInner}</Bevel>
+    ) : sheet === "field" ? (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div>
+          <PanelTitle>ПОСТРОЕНИЕ</PanelTitle>
+          <Bevel out={false} style={{ padding: 10, display: "grid", gap: 8, background: "#E6E3D8" }}>{buildInner}</Bevel>
+        </div>
+        <div>
+          <PanelTitle>ПОДЛОЖКА</PanelTitle>
+          <Bevel out={false} style={{ padding: 10, display: "grid", gap: 10, background: "#E6E3D8" }}>
+            {bg ? bgInner : (<>
+              <div style={{ fontSize: 13.5, opacity: 0.8 }}>Снимок участка или схема под планировку. Картинка остаётся только у вас и в ссылку не входит.</div>
+              <ChromeButton onClick={() => imgRef.current && imgRef.current.click()}>Загрузить подложку</ChromeButton>
+            </>)}
+          </Bevel>
+        </div>
+      </div>
+    ) : sheet === "calc" ? (
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+          {[["Всего тюков", stats.totalBales], ["Длина стен", `${r1(stats.totalLen)} м`],
+            ["Смета", `${(stats.totalBales * price).toLocaleString("ru-RU")} ₽`], ["Цена тюка", null]].map(([k, v]) => (
+            <Bevel key={k} out={false} style={{ background: "#fff", padding: "7px 9px", display: "grid", gap: 2 }}>
+              <span style={{ fontSize: 12.5, opacity: 0.7 }}>{k}</span>
+              {v != null ? <b style={{ fontSize: 17 }}>{v}</b> : <span><NumIn value={price} min={0} step={10} onChange={setPrice} width={96} /> ₽</span>}
+            </Bevel>
+          ))}
+        </div>
+        <Bevel out={false} style={{ background: "#fff", overflowX: "auto" }}>{baleTable}</Bevel>
+        <div style={{ fontSize: 13, opacity: 0.75 }}>
+          Тюк {BALE_L} × {BALE_T} м. Поддонов {stats.crates}, покрышек {stats.tires}, бочек {stats.barrels} — в смету не входят.
+        </div>
+        <ChromeButton onClick={exportCSV}>Выгрузить расчёт в CSV</ChromeButton>
+      </div>
+    ) : sheet === "zones" ? (
+      <div style={{ display: "grid", gap: 7 }}>
+        {Object.values(zones).length === 0 && (
+          <div style={{ fontSize: 13.5, opacity: 0.8 }}>Зон пока нет. Возьмите инструмент «Зона» и протяните рамку на карте.</div>
+        )}
+        {Object.values(zones).map((z) => {
+          const occ = zoneOccupancy(z);
+          return (
+            <Bevel key={z.id} out={false} style={{ background: selZone === z.id ? "#DCE6F5" : "#fff", padding: 8, display: "grid", gap: 7 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ width: 20, height: 16, flexShrink: 0, background: z.fill || ZONE_KINDS[z.k].fill, border: `1px solid ${ZONE_KINDS[z.k].stroke}` }} />
+                <input value={z.n} onChange={(e) => updateZone(z.id, { n: e.target.value })}
+                  onFocus={() => { setSelZone(z.id); setSelected(null); }}
+                  style={{ flex: 1, minWidth: 0, background: "#fff", border: "1px solid #9A9684", padding: "4px 7px", font: "16px Tahoma, sans-serif" }} />
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <select value={z.k} onChange={(e) => updateZone(z.id, { k: e.target.value })}
+                  style={{ flex: "1 1 150px", minWidth: 0, background: "#fff", border: "1px solid #9A9684", font: "16px Tahoma, sans-serif" }}>
+                  {Object.keys(ZONE_KINDS).map((k) => <option key={k} value={k}>{ZONE_KINDS[k].label}</option>)}
+                </select>
+                <span style={{ fontSize: 14, whiteSpace: "nowrap" }}>
+                  A <b style={{ color: C.teamA }}>{occ.a}</b> / B <b style={{ color: C.teamB }}>{occ.b}</b>
+                </span>
+                <span style={{ display: "inline-flex", gap: 5, alignItems: "center", fontSize: 14, marginLeft: "auto" }}>
+                  Очки <b style={{ minWidth: 20, textAlign: "center" }}>{z.score}</b>
+                  <ChromeButton onClick={() => updateZone(z.id, { score: (z.score || 0) + 1 })}>+</ChromeButton>
+                  <ChromeButton onClick={() => updateZone(z.id, { score: Math.max(0, (z.score || 0) - 1) })}>−</ChromeButton>
+                </span>
+              </div>
+            </Bevel>
+          );
+        })}
+        {Object.values(zones).length > 0 && (
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 14, padding: "4px 2px", flexWrap: "wrap" }}>
+            <span>Зон: <b>{Object.keys(zones).length}</b></span>
+            <span>Игроков A / B: <b style={{ color: C.teamA }}>{stats.figs.filter((f) => f.t === "figA").length}</b> / <b style={{ color: C.teamB }}>{stats.figs.filter((f) => f.t === "figB").length}</b></span>
+            <span>Очков: <b>{Object.values(zones).reduce((s0, z) => s0 + (z.score || 0), 0)}</b></span>
+          </div>
+        )}
+        <div style={{ fontSize: 12.5, opacity: 0.75 }}>A / B — сколько фигурок каждой команды сейчас стоит в зоне.</div>
+      </div>
+    ) : null;
+
+    const toolButtons = TOOLS.map(([k, label]) => (
+      <button key={k} type="button" title={label} aria-label={label} aria-pressed={tool === k}
+        onClick={() => pickTool(k)}
+        style={{
+          flex: narrow ? "1 1 0" : "1 0 50px", minWidth: narrow ? 0 : 50, height: barH, padding: "3px 1px", display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center", gap: 2, cursor: "pointer", touchAction: "manipulation",
+          background: tool === k ? "#C0CBE0" : C.chrome, color: C.ink, ...bevelBtn(tool === k),
+        }}>
+        <ToolIcon kind={k} w={narrow || low ? 24 : 28} h={narrow || low ? 20 : 24} />
+        <span style={{ font: `${narrow ? 9.5 : 10.5}px/1 Tahoma, sans-serif`, whiteSpace: "nowrap" }}>{SHORT[k]}</span>
+      </button>
+    ));
+    const tabButtons = SHEETS.map(([k, label]) => (
+      <button key={k} type="button" aria-pressed={sheet === k}
+        onClick={() => toggleSheet(k)}
+        style={{
+          flex: oneRow ? "1 0 70px" : 1, minWidth: 0, height: oneRow ? barH : 42, padding: narrow ? 0 : "0 2px", cursor: "pointer", touchAction: "manipulation",
+          background: sheet === k ? "#C4BFAE" : C.chrome, color: C.ink, font: `${narrow ? 11.5 : 13}px Tahoma, sans-serif`, whiteSpace: "nowrap",
+          overflow: "hidden", textOverflow: "ellipsis", ...bevelBtn(sheet === k),
+        }}>
+        {label}{k === "props" && (sel || zsel) ? " •" : ""}
+      </button>
+    ));
+
+    return (
+      <CompactCtx.Provider value={true}>
+        <div style={{
+          ...ui, fontSize: 14, background: C.chrome, width: "100%", height: "100%", overflow: "hidden",
+          display: "flex", flexDirection: "column", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none",
+          paddingLeft: "env(safe-area-inset-left)", paddingRight: "env(safe-area-inset-right)",
+        }}>
+          {hiddenInputs}
+
+          {/* ВЕРХ */}
+          <div style={{
+            display: "flex", alignItems: "center", gap: 6, padding: low ? "2px 6px" : "5px 6px", paddingTop: `calc(${low ? 2 : 5}px + env(safe-area-inset-top))`,
+            borderBottom: `2px solid ${C.chromeLo}`, background: "#DFDBCD", flexShrink: 0,
+          }}>
+            <ChromeButton onClick={() => setDialog("menu")} title="Меню">☰ Меню</ChromeButton>
+            <svg width="34" height="25" viewBox="0 0 46 34" style={{ flexShrink: 0 }} aria-hidden="true">
+              <rect x="2" y="12" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+              <rect x="2" y="21" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+              <rect x="8" y="4" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+              <circle cx="36" cy="20" r="9" fill="#2A2A2C" />
+              <circle cx="32.5" cy="18" r="2.6" fill="#DDD" /><circle cx="39.5" cy="18" r="2.6" fill="#DDD" />
+            </svg>
+            <div style={{ lineHeight: 1.1, minWidth: 0, flex: 1 }}>
+              <div style={{ font: "bold 15px Tahoma, sans-serif", letterSpacing: ".03em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                CQB СЕЛО{low ? <span style={{ fontWeight: "normal", opacity: 0.75 }}> · {mapName}</span> : null}
+              </div>
+              {!low && <div style={{ font: "11.5px Tahoma, sans-serif", opacity: 0.75, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{mapName}</div>}
+            </div>
+            <ChromeButton onClick={undo} disabled={!history.length} title="Отменить" style={{ padding: "4px 8px" }}>
+              <svg width="20" height="18" viewBox="0 0 20 18" aria-label="Отменить" style={{ display: "block", margin: "0 auto" }}>
+                <path d="M7 3L2 8l5 5" fill="none" stroke={history.length ? "#1A1A18" : "#8C8878"} strokeWidth="2.2" strokeLinejoin="round" />
+                <path d="M3 8h9a5 5 0 010 10h-3" fill="none" stroke={history.length ? "#1A1A18" : "#8C8878"} strokeWidth="2.2" />
+              </svg>
+            </ChromeButton>
+            <ChromeButton onClick={fitView} title="Вписать поле в экран" style={{ padding: "4px 8px" }}>
+              <svg width="20" height="18" viewBox="0 0 20 18" aria-label="Вписать" style={{ display: "block", margin: "0 auto" }}>
+                <path d="M2 6V2h4M14 2h4v4M18 12v4h-4M6 16H2v-4" fill="none" stroke="#1A1A18" strokeWidth="2" />
+                <rect x="6" y="6" width="8" height="6" fill={C.hayFill} stroke={C.hayEdge} />
+              </svg>
+            </ChromeButton>
+          </div>
+
+          {/* КАРТА */}
+          <div ref={wrapRef} style={{ flex: 1, minHeight: 0, minWidth: 0, position: "relative", background: "#EFEFEF", overflow: "hidden" }}>
+            {mapSvg}
+
+            <div style={{ position: "absolute", left: 6, top: 6, right: 6, display: "grid", gridTemplateColumns: "minmax(0, 1fr)", gap: 5, justifyItems: "start", pointerEvents: "none" }}>
+              {(sel || zsel) && (
+                <div style={chip}>
+                  <span style={{ flex: "1 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selText}</span>
+                  <ChromeButton onClick={() => setSheet("props")} style={{ padding: "4px 8px", flexShrink: 0 }}>Свойства</ChromeButton>
+                  <ChromeButton onClick={deleteSelected} style={{ padding: "4px 8px", flexShrink: 0 }}>Удалить</ChromeButton>
+                </div>
+              )}
+              {hint && (
+                <div style={{ ...chip, padding: "5px 9px", background: ghost ? "#FFFBE6" : chip.background }}>
+                  <span>{hint}</span>
+                  {tool === "zone" && !ghost && (
+                    <ChromeButton onClick={() => setDialog("zonekind")} style={{ padding: "4px 8px" }}>Тип</ChromeButton>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div style={{ position: "absolute", right: 8, bottom: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+              <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.max(0.008, v.mpp * 0.8) }))} title="Приблизить" style={{ width: 44, height: 44, fontSize: 20, padding: 0 }}>+</ChromeButton>
+              <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.min(zoomMax, v.mpp * 1.25) }))} title="Отдалить" style={{ width: 44, height: 44, fontSize: 20, padding: 0 }}>−</ChromeButton>
+            </div>
+
+            {sheet && (
+              <div style={{
+                position: "absolute", zIndex: 30, display: "flex", flexDirection: "column", background: C.chrome,
+                boxShadow: "0 -3px 0 rgba(0,0,0,.18)",
+                ...(landscape
+                  ? { top: 0, right: 0, bottom: 0, width: "min(400px, 58%)", borderLeft: `2px solid ${C.chromeHi}`, boxShadow: "-3px 0 0 rgba(0,0,0,.18)" }
+                  : { left: 0, right: 0, bottom: 0, height: "62%", borderTop: `2px solid ${C.chromeHi}` }),
+              }}>
+                <div style={{ background: "#2F5FA8", color: "#fff", font: "bold 14px Tahoma, sans-serif", padding: "3px 3px 3px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+                  <span>{SHEET_TITLE[sheet]}</span>
+                  <button type="button" onClick={() => setSheet(null)} aria-label="Закрыть панель"
+                    style={{ background: C.chrome, border: `1px solid ${C.chromeLo}`, font: "14px Tahoma", width: 38, height: 32, padding: 0, cursor: "pointer", touchAction: "manipulation" }}>✕</button>
+                </div>
+                <div style={{ flex: 1, minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", WebkitOverflowScrolling: "touch", padding: 10 }}>
+                  {sheetBody}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* СТАТУС */}
+          <div style={{ display: "flex", borderTop: `2px solid ${C.chromeHi}`, borderBottom: `2px solid ${C.chromeLo}`, flexShrink: 0 }}>
+            <StatusCell flex>{status}</StatusCell>
+            <button type="button" onClick={() => toggleSheet("calc")}
+              style={{ padding: "3px 10px", font: "bold 12.5px Tahoma, sans-serif", background: C.chrome, color: C.ink, border: "none", borderLeft: `1px solid ${C.chromeHi}`, cursor: "pointer", whiteSpace: "nowrap", touchAction: "manipulation" }}>
+              Тюков: {stats.totalBales}
+            </button>
+          </div>
+
+          {/* ИНСТРУМЕНТЫ И ПАНЕЛИ */}
+          <div style={{
+            display: "flex", gap: 3, padding: 4, overflowX: "auto", flexShrink: 0,
+            paddingBottom: oneRow ? "calc(4px + env(safe-area-inset-bottom))" : 4,
+          }}>
+            {toolButtons}
+            {oneRow && <div style={{ width: 2, flexShrink: 0, margin: "2px 3px", borderLeft: `1px solid ${C.chromeLo}`, borderRight: `1px solid ${C.chromeHi}` }} />}
+            {oneRow && tabButtons}
+          </div>
+          {!oneRow && (
+            <div style={{ display: "flex", gap: 3, padding: "0 4px 4px", paddingBottom: "calc(4px + env(safe-area-inset-bottom))", flexShrink: 0 }}>
+              {tabButtons}
+            </div>
+          )}
+
+          {dialogs}
+        </div>
+      </CompactCtx.Provider>
+    );
+  }
+
+  return (
+    <div style={{ ...ui, background: C.chrome, width: "100%", height: "100%", overflow: "hidden", display: "flex", flexDirection: "column", userSelect: "none" }}
+      onPointerDown={() => setOpenMenu(null)}>
+
+      {/* ВЕРХ */}
+      <div style={{ display: "flex", alignItems: "stretch", borderBottom: `2px solid ${C.chromeLo}` }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", gap: 2, padding: "2px 6px" }} onPointerDown={(e) => e.stopPropagation()}>
+            {MENUS.map((m) => <Menu key={m.label} label={m.label} items={m.items} open={openMenu} setOpen={setOpenMenu} />)}
+          </div>
+          <div style={{ display: "flex", gap: 5, padding: "0 8px 6px", flexWrap: "wrap" }}>
+            <ChromeButton onClick={newMap}>Новая карта</ChromeButton>
+            <ChromeButton onClick={() => fileRef.current && fileRef.current.click()}>Файл</ChromeButton>
+            <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
+            <ChromeButton onClick={() => { refreshLibrary(); setDialog("library"); }}>Мои карты</ChromeButton>
+            <ChromeButton onClick={openShared}>Общие</ChromeButton>
+            <ChromeButton onClick={makeShareLink}>Ссылка</ChromeButton>
+            <ChromeButton onClick={() => imgRef.current && imgRef.current.click()}>Подложка</ChromeButton>
+            <ChromeButton onClick={undo} disabled={!history.length}>Отменить</ChromeButton>
+            <ChromeButton onClick={fitView}>Вписать</ChromeButton>
+            <ChromeButton onClick={resetMap}>Сброс к референсу</ChromeButton>
+            {hiddenInputs}
+          </div>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 16px", borderLeft: `2px solid ${C.chromeLo}`, background: "#DFDBCD" }}>
+          <svg width="46" height="34" viewBox="0 0 46 34">
+            <rect x="2" y="12" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+            <rect x="2" y="21" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+            <rect x="8" y="4" width="20" height="9" fill={C.hayFill} stroke={C.hayEdge} />
+            <circle cx="36" cy="20" r="9" fill="#2A2A2C" />
+            <circle cx="32.5" cy="18" r="2.6" fill="#DDD" /><circle cx="39.5" cy="18" r="2.6" fill="#DDD" />
+          </svg>
+          <div style={{ lineHeight: 1.05 }}>
+            <div style={{ font: `bold ${fs(20)}px Tahoma, sans-serif`, letterSpacing: ".03em" }}>CQB СЕЛО</div>
+            <div style={{ font: `${fs(10)}px Tahoma, sans-serif`, opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.3</div>
+          </div>
+        </div>
+      </div>
+
+      {/* РАБОЧАЯ ОБЛАСТЬ */}
+      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        <div style={{ width: 196, flexShrink: 0, borderRight: `2px solid ${C.chromeLo}`, padding: 6, display: "flex", flexDirection: "column", gap: 4, overflowY: "auto" }}>
+          {TOOLS.map(([k, label]) => (
+            <button key={k} type="button" onMouseUp={(e) => e.currentTarget.blur()}
+              onClick={() => { setTool(k); if (k === "zone") setDialog("zonekind"); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer",
+                background: tool === k ? "#C0CBE0" : C.chrome, textAlign: "left", ...ui,
+                borderTop: `2px solid ${tool === k ? C.chromeLo : C.chromeHi}`, borderLeft: `2px solid ${tool === k ? C.chromeLo : C.chromeHi}`,
+                borderBottom: `2px solid ${tool === k ? C.chromeHi : C.chromeLo}`, borderRight: `2px solid ${tool === k ? C.chromeHi : C.chromeLo}`,
+              }}>
+              <Bevel out={false} style={{ padding: 2, background: "#EFECE2", display: "flex" }}><ToolIcon kind={k} /></Bevel>
+              <span style={{ fontSize: fs(11.5) }}>{label}</span>
+            </button>
+          ))}
+
+          {tool === "zone" && (
+            <Bevel out={false} style={{ padding: 6, background: "#E6E3D8", display: "grid", gap: 3, marginTop: 2 }}>
+              <div style={{ fontSize: fs(10.5), opacity: 0.75, marginBottom: 2 }}>Тип новой зоны:</div>
+              {Object.keys(ZONE_KINDS).map((k) => (
+                <button key={k} type="button" onClick={() => setZoneKind(k)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 7, padding: "2px 4px", cursor: "pointer", ...ui, fontSize: fs(11),
+                    background: zoneKind === k ? "#C0CBE0" : "transparent",
+                    border: zoneKind === k ? `1px solid ${C.sel}` : "1px solid transparent",
+                  }}>
+                  <span style={{ width: 20, height: 13, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}` }} />{ZONE_KINDS[k].label}
+                </button>
+              ))}
+            </Bevel>
+          )}
+
+          <div style={{ marginTop: 8 }}>
+            <PanelTitle>ПОСТРОЕНИЕ</PanelTitle>
+            <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
+              {buildInner}
+            </Bevel>
+          </div>
+
+          {bg && (
+            <div style={{ marginTop: 6 }}>
+              <PanelTitle>ПОДЛОЖКА</PanelTitle>
+              <Bevel out={false} style={{ padding: 7, display: "grid", gap: 5, background: "#E6E3D8" }}>
+                {bgInner}
+              </Bevel>
+            </div>
+          )}
+        </div>
+
+        {/* КАРТА */}
+        <div ref={wrapRef} style={{ flex: 1, minWidth: 320, position: "relative", background: "#EFEFEF", borderRight: `2px solid ${C.chromeLo}`, overflow: "hidden" }}>
+          {mapSvg}
+
+          <div style={{ position: "absolute", right: 8, bottom: 8, display: "flex", gap: 4 }} onPointerDown={(e) => e.stopPropagation()}>
+            <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.max(0.008, v.mpp * 0.83) }))}>+</ChromeButton>
+            <ChromeButton onClick={() => setView((v) => ({ ...v, mpp: Math.min(zoomMax, v.mpp * 1.2) }))}>−</ChromeButton>
+            <ChromeButton onClick={fitView}>Вписать</ChromeButton>
+          </div>
+          {tool === "pan" && (
+            <div style={{ position: "absolute", left: 8, top: 8, background: "rgba(255,255,255,.88)", border: `1px solid ${C.chromeLo}`, padding: "3px 8px", fontSize: fs(11) }}>
+              {coarse ? "Тяните карту пальцем. Двумя пальцами — зум." : "Тяните карту мышью. Колесо — зум. Пробел включает панораму из любого инструмента."}
+            </div>
+          )}
+        </div>
+
+        {/* ПРАВАЯ ПАНЕЛЬ */}
+        <div style={{ width: 236, flexShrink: 0, display: "flex", flexDirection: "column", overflowY: "auto" }}>
+          <PanelTitle>БИБЛИОТЕКА ОБЪЕКТОВ</PanelTitle>
+          {assetGrid(2)}
+
+          <PanelTitle>СВОЙСТВА</PanelTitle>
+          <Bevel out={false} style={{ margin: 5, padding: 7, background: "#E6E3D8", display: "grid", gap: 5 }}>
+            {propsInner}
+          </Bevel>
+
+          <PanelTitle>ЛЕГЕНДА</PanelTitle>
+          <Bevel out={false} style={{ margin: 5, padding: 7, background: "#FFFFFF", display: "grid", gap: 5 }}>
+            {legendInner}
           </Bevel>
         </div>
       </div>
@@ -1296,40 +2171,24 @@ export default function CQBSelo() {
         height: 208, flexShrink: 0, overflow: "hidden",
       }}>
         <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 400, flex: "1 1 400px", display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div style={{ background: C.chromeDk, font: "bold 11px Tahoma, sans-serif", padding: "4px 8px", letterSpacing: ".05em" }}>
+          <div style={{ background: C.chromeDk, font: `bold ${fs(11)}px Tahoma, sans-serif`, padding: "4px 8px", letterSpacing: ".05em" }}>
             РАСЧЁТ КОЛИЧЕСТВА ТЮКОВ · размер тюка {BALE_L} × {BALE_T} м
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
-              <thead><tr style={{ background: "#EDEBE2" }}>
-                <Th>Тип секции</Th><Th right>Секций</Th><Th right>Ярусов</Th><Th right>Тюков в секции</Th><Th right>Всего</Th>
-              </tr></thead>
-              <tbody>
-                {stats.rows.map((r, i) => (
-                  <tr key={i} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
-                    <Td>Стена {r.len} м</Td><Td right>{r.n}</Td><Td right>{r.tiers}</Td><Td right>{r.per}</Td><Td right><b>{r.total}</b></Td>
-                  </tr>
-                ))}
-                {stats.colBales > 0 && <tr style={{ background: "#F7F6F1" }}><Td>Колонны</Td><Td right>{stats.columns.length}</Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.colBales}</b></Td></tr>}
-                {stats.stackBales > 0 && <tr><Td>Штабели</Td><Td right>{stats.stacks.length}</Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.stackBales}</b></Td></tr>}
-                <tr style={{ background: "#DDE6D6", borderTop: `2px solid ${C.chromeLo}` }}>
-                  <Td><b>Итого</b></Td><Td right><b>{stats.walls.length}</b></Td><Td right>—</Td><Td right>—</Td><Td right><b>{stats.totalBales}</b></Td>
-                </tr>
-              </tbody>
-            </table>
+            {baleTable}
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderTop: `1px solid ${C.chromeDk}`, background: "#EDEBE2", flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11.5 }}>Цена тюка, ₽</span>
+            <span style={{ fontSize: fs(11.5) }}>Цена тюка, ₽</span>
             <NumIn value={price} min={0} step={10} onChange={setPrice} width={70} />
-            <span style={{ fontSize: 11.5 }}>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></span>
-            <span style={{ fontSize: 10.5, opacity: 0.7 }}>Поддонов {stats.crates} · покрышек {stats.tires} · бочек {stats.barrels}</span>
+            <span style={{ fontSize: fs(11.5) }}>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></span>
+            <span style={{ fontSize: fs(10.5), opacity: 0.7 }}>Поддонов {stats.crates} · покрышек {stats.tires} · бочек {stats.barrels}</span>
           </div>
         </Bevel>
 
         <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 360, flex: "1 1 360px", display: "flex", flexDirection: "column", minHeight: 0 }}>
-          <div style={{ background: C.chromeDk, font: "bold 11px Tahoma, sans-serif", padding: "4px 8px", letterSpacing: ".05em" }}>ЗОНЫ И СЧЁТ</div>
+          <div style={{ background: C.chromeDk, font: `bold ${fs(11)}px Tahoma, sans-serif`, padding: "4px 8px", letterSpacing: ".05em" }}>ЗОНЫ И СЧЁТ</div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
               <thead><tr style={{ background: "#EDEBE2" }}>
                 <Th>Название</Th><Th>Тип</Th><Th right>A / B</Th><Th right>Очки</Th><Th />
               </tr></thead>
@@ -1342,11 +2201,11 @@ export default function CQBSelo() {
                         <span style={{ display: "inline-block", width: 13, height: 11, background: z.fill || ZONE_KINDS[z.k].fill, border: `1px solid ${ZONE_KINDS[z.k].stroke}`, marginRight: 6, verticalAlign: "-1px" }} />
                         <input value={z.n} onChange={(e) => updateZone(z.id, { n: e.target.value })}
                           onFocus={() => { setSelZone(z.id); setSelected(null); }}
-                          style={{ width: 104, background: "#fff", border: "1px solid #C9C6BA", padding: "1px 3px", font: "11.5px Tahoma, sans-serif" }} />
+                          style={{ width: 104, background: "#fff", border: "1px solid #C9C6BA", padding: "1px 3px", font: `${fs(11.5)}px Tahoma, sans-serif` }} />
                       </Td>
                       <Td>
                         <select value={z.k} onChange={(e) => updateZone(z.id, { k: e.target.value })}
-                          style={{ width: 116, background: "#fff", border: "1px solid #C9C6BA", font: "11px Tahoma, sans-serif" }}>
+                          style={{ width: 116, background: "#fff", border: "1px solid #C9C6BA", font: `${fs(11)}px Tahoma, sans-serif` }}>
                           {Object.keys(ZONE_KINDS).map((k) => <option key={k} value={k}>{ZONE_KINDS[k].label}</option>)}
                         </select>
                       </Td>
@@ -1367,259 +2226,13 @@ export default function CQBSelo() {
               </tbody>
             </table>
           </div>
-          <div style={{ padding: "6px 8px", borderTop: `1px solid ${C.chromeDk}`, background: "#EDEBE2", fontSize: 10.5, opacity: 0.8 }}>
+          <div style={{ padding: "6px 8px", borderTop: `1px solid ${C.chromeDk}`, background: "#EDEBE2", fontSize: fs(10.5), opacity: 0.8 }}>
             Название правится прямо в таблице, тип — в списке рядом. A / B — сколько фигурок каждой команды сейчас в зоне.
           </div>
         </Bevel>
       </div>
 
-      {/* ДИАЛОГИ */}
-      {pending && (
-        <Modal title="Новая зона" onClose={() => setPending(null)}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <div style={{ fontSize: 12 }}>Размер: {r1(pending.w)} × {r1(pending.h)} м</div>
-            <div style={{ fontSize: 12 }}>Название</div>
-            <input autoFocus value={pending.n} placeholder={ZONE_KINDS[pending.k].label}
-              onChange={(e) => setPending((p) => ({ ...p, n: e.target.value }))}
-              style={{ background: "#fff", border: "1px solid #9A9684", padding: "3px 6px", font: "12px Tahoma, sans-serif" }} />
-            <div style={{ fontSize: 12 }}>Тип зоны</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3 }}>
-              {Object.keys(ZONE_KINDS).map((k) => (
-                <button key={k} type="button" onClick={() => setPending((p) => ({ ...p, k }))}
-                  style={{
-                    display: "flex", alignItems: "center", gap: 6, padding: "3px 5px", cursor: "pointer",
-                    font: "11.5px Tahoma, sans-serif", background: pending.k === k ? "#C0CBE0" : "#F2F0E8",
-                    border: pending.k === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`, textAlign: "left",
-                  }}>
-                  <span style={{ width: 18, height: 12, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}`, flexShrink: 0 }} />
-                  {ZONE_KINDS[k].label}
-                </button>
-              ))}
-            </div>
-            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 4 }}>
-              <ChromeButton onClick={() => setPending(null)}>Отмена</ChromeButton>
-              <ChromeButton onClick={() => {
-                const id = uid("z");
-                const name = pending.n.trim() || ZONE_KINDS[pending.k].label;
-                setZones((m) => ({ ...m, [id]: { id, k: pending.k, n: name, x: pending.x, y: pending.y, w: pending.w, h: pending.h, score: 0 } }));
-                setSelZone(id); setSelected(null); setPending(null);
-                setStatus(`Зона «${name}» создана`);
-              }}>Создать зону</ChromeButton>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "library" && (
-        <Modal title="Мои карты" onClose={() => setDialog(null)} width={480}>
-          <div style={{ display: "grid", gap: 10 }}>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input value={mapName} onChange={(e) => setMapName(e.target.value)} placeholder="Название карты"
-                style={{ flex: 1, background: "#fff", border: "1px solid #9A9684", padding: "3px 6px", font: "12px Tahoma, sans-serif" }} />
-              <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
-            </div>
-            {library.length === 0 ? (
-              <div style={{ fontSize: 11.5, opacity: 0.75, padding: "6px 0" }}>
-                Сохранённых карт пока нет. Впишите название и нажмите «Сохранить» — карта останется в этом браузере.
-              </div>
-            ) : (
-              <div style={{ maxHeight: 260, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
-                  <tbody>
-                    {library.map((m, i) => (
-                      <tr key={m.key} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
-                        <Td>{m.name}</Td>
-                        <Td>{m.at ? new Date(m.at).toLocaleString("ru-RU") : ""}</Td>
-                        <Td right>{Math.round(m.size / 1024)} КБ</Td>
-                        <Td right><span style={{ display: "inline-flex", gap: 4 }}>
-                          <ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadFromLibrary(m.key)}>Открыть</ChromeButton>
-                          <ChromeButton style={{ padding: "1px 7px" }} onClick={() => deleteFromLibrary(m.key, m.name)}>Удалить</ChromeButton>
-                        </span></Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            <div style={{ fontSize: 11, opacity: 0.75, lineHeight: 1.5 }}>
-              Карты лежат в этом браузере на этом устройстве. Друзья своих карт здесь не увидят — чтобы передать карту,
-              сделайте ссылку через «Файл → Ссылка для друзей» или сохраните файлом JSON.
-              Очистка данных сайта в браузере удалит список.
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "shared" && (
-        <Modal title="Общие карты с сайта" onClose={() => setDialog(null)} width={490}>
-          <div style={{ display: "grid", gap: 9 }}>
-            {shared.state === "loading" && <div style={{ fontSize: 12 }}>Читаю папку maps…</div>}
-            {shared.state === "err" && (
-              <div style={{ fontSize: 11.5, lineHeight: 1.6 }}>
-                Список не загрузился: {shared.err}.<br />
-                Такое бывает, если приложение открыто файлом с диска, а не по ссылке сайта,
-                либо папки maps в репозитории ещё нет.
-              </div>
-            )}
-            {shared.state === "ok" && shared.list.length === 0 && (
-              <div style={{ fontSize: 11.5 }}>Папка maps пустая. Положите туда файлы карт .json.</div>
-            )}
-            {shared.state === "ok" && shared.list.length > 0 && (
-              <div style={{ maxHeight: 300, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", font: "11.5px Tahoma, sans-serif" }}>
-                  <tbody>
-                    {shared.list.map((m, i) => (
-                      <tr key={m.url} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
-                        <Td>{m.name}{m.author ? <span style={{ opacity: 0.6 }}> · {m.author}</span> : null}</Td>
-                        <Td right>{m.size ? Math.round(m.size / 1024) + " КБ" : ""}</Td>
-                        <Td right><ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadShared(m)}>Открыть</ChromeButton></Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {shared.state === "ok" && shared.err && <div style={{ fontSize: 11.5, color: "#9A2A2A" }}>{shared.err}</div>}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 11, opacity: 0.75 }}>Карты лежат в папке maps репозитория сайта.</span>
-              <ChromeButton onClick={openShared}>Обновить</ChromeButton>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "share" && (
-        <Modal title="Ссылка для друзей" onClose={() => setDialog(null)} width={470}>
-          <div style={{ display: "grid", gap: 9, fontSize: 12 }}>
-            {shareUrl ? (<>
-              <div>Вся карта упакована внутрь адреса. Кто откроет ссылку, увидит эту планировку.</div>
-              <textarea readOnly value={shareUrl} rows={5} onFocus={(e) => e.target.select()}
-                style={{ width: "100%", font: "11px Consolas, monospace", border: "1px solid #9A9684", padding: 5, resize: "vertical" }} />
-              <div style={{ display: "flex", gap: 6, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
-                <span style={{ fontSize: 11, opacity: 0.75 }}>{shareNote}</span>
-                <ChromeButton onClick={() => {
-                  if (navigator.clipboard) navigator.clipboard.writeText(shareUrl).then(
-                    () => setShareNote("Ссылка скопирована"), () => setShareNote("Скопируйте вручную: выделите текст выше"));
-                  else setShareNote("Скопируйте вручную: выделите текст выше");
-                }}>Скопировать</ChromeButton>
-              </div>
-            </>) : (
-              <div>{shareNote || "Собираю ссылку…"}</div>
-            )}
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "zonekind" && (
-        <Modal title="Тип зоны для рисования" onClose={() => setDialog(null)} width={340}>
-          <div style={{ display: "grid", gap: 4 }}>
-            <div style={{ fontSize: 11.5, opacity: 0.8, marginBottom: 4 }}>Выберите тип, затем протяните рамку на карте. Название спросим после.</div>
-            {Object.keys(ZONE_KINDS).map((k) => (
-              <button key={k} type="button" onClick={() => { setZoneKind(k); setDialog(null); }}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8, padding: "5px 7px", cursor: "pointer",
-                  font: "12px Tahoma, sans-serif", background: zoneKind === k ? "#C0CBE0" : "#F2F0E8",
-                  border: zoneKind === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`, textAlign: "left",
-                }}>
-                <span style={{ width: 26, height: 15, background: ZONE_KINDS[k].fill, border: `1px solid ${ZONE_KINDS[k].stroke}` }} />
-                {ZONE_KINDS[k].label}
-              </button>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "bg" && bg && (
-        <Modal title="Подложка" onClose={() => setDialog(null)} width={400}>
-          <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
-            <div style={{ opacity: 0.8 }}>{bg.name}</div>
-            <BgSlider label="Прозрачность" unit="%" value={Math.round(bg.opacity * 100)} min={0} max={100} step={2}
-              onChange={(v) => setBg((b) => ({ ...b, opacity: v / 100 }))} />
-            <BgSlider label="Ширина картинки" unit=" м" value={bg.w} min={0.2} max={20000} step={0.5} free minClamp={0.05}
-              onChange={(v) => setBg((b) => ({ ...b, w: v }))}
-              extra={<div style={{ display: "flex", gap: 4 }}>
-                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 25) / 100) }))}>÷4</ChromeButton>
-                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.max(0.05, Math.round(b.w * 50) / 100) }))}>÷2</ChromeButton>
-                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 200) / 100 }))}>×2</ChromeButton>
-                <ChromeButton style={{ flex: 1, padding: "0 5px", fontSize: 11 }} onClick={() => setBg((b) => ({ ...b, w: Math.round(b.w * 400) / 100 }))}>×4</ChromeButton>
-              </div>} />
-            <BgSlider label="Поворот" unit="°" value={bgRot} min={0} max={360} step={0.5} wrap
-              onChange={(v) => setBg((b) => ({ ...b, rot: v }))}
-              extra={<div style={{ display: "flex", gap: 4 }}>
-                {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
-                  <ChromeButton key={a} style={{ flex: 1, padding: "0 3px", fontSize: 10.5 }} onClick={() => setBg((b) => ({ ...b, rot: a }))}>{a}</ChromeButton>
-                ))}
-              </div>} />
-            <BgSlider label="Смещение X" unit=" м" value={bg.x} min={-(field.w + bg.w)} max={field.w + bg.w} step={1} free
-              onChange={(v) => setBg((b) => ({ ...b, x: v }))} />
-            <BgSlider label="Смещение Y" unit=" м" value={bg.y} min={-(field.h + bgH)} max={field.h + bgH} step={1} free
-              onChange={(v) => setBg((b) => ({ ...b, y: v }))} />
-            <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <input type="checkbox" checked={!!bg.locked} onChange={(e) => setBg((b) => ({ ...b, locked: e.target.checked }))} />
-              Закрепить (иначе двигается мышью инструментом «Выделить»)
-            </label>
-            <div style={{ fontSize: 11, opacity: 0.75 }}>
-              Как совместить: подберите ширину так, чтобы известный объект на снимке совпал по длине с сеткой, поворотом разверните снимок по осям поля, затем сдвиньте картинку. Мелкая сетка — 1 м. Ширина не ограничена сверху: ползунок логарифмический, точное число можно вписать руками, кнопки ×2 и ÷2 меняют масштаб скачком.
-            </div>
-            <div style={{ display: "flex", gap: 6, justifyContent: "space-between" }}>
-              <ChromeButton onClick={() => setBg((b) => ({ ...b, x: 0, y: 0, w: field.w }))}>Вписать в поле</ChromeButton>
-              <ChromeButton onClick={() => setDialog(null)}>Готово</ChromeButton>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "field" && (
-        <Modal title="Размер поля и сетка" onClose={() => setDialog(null)} width={320}>
-          <div style={{ display: "grid", gap: 8 }}>
-            <Row label="Ширина поля, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
-            <Row label="Длина поля, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
-            <Row label="Шаг сетки, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
-            <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-              <ChromeButton onClick={() => { fitView(); setDialog(null); }}>Готово</ChromeButton>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "price" && (
-        <Modal title="Цена тюка" onClose={() => setDialog(null)} width={330}>
-          <div style={{ display: "grid", gap: 8, fontSize: 12 }}>
-            <Row label="Цена одного тюка, ₽"><NumIn value={price} min={0} step={10} onChange={setPrice} width={90} /></Row>
-            <div>Тюков в проекте: <b>{stats.totalBales}</b></div>
-            <div>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></div>
-            <div style={{ fontSize: 11, opacity: 0.75 }}>Цена относится к тюку {BALE_L} × {BALE_T} м. Поддоны, покрышки и бочки в смету не входят — их количество показано под таблицей.</div>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}><ChromeButton onClick={() => setDialog(null)}>Готово</ChromeButton></div>
-          </div>
-        </Modal>
-      )}
-
-      {dialog === "keys" && (
-        <Modal title="Горячие клавиши" onClose={() => setDialog(null)} width={370}>
-          <table style={{ width: "100%", font: "12px Tahoma, sans-serif", borderCollapse: "collapse" }}>
-            <tbody>
-              {[["H", "Горизонтальная стена"], ["V", "Вертикальная стена"], ["Пробел", "Панорама"],
-                ["Shift + тяга", "Панорама из любого инструмента"], ["Правая кнопка", "Панорама"],
-                ["Колесо", "Зум к курсору"], ["Del", "Удалить выбранное"], ["Ctrl + Z", "Отменить"],
-                ["Esc", "Сбросить инструмент"]].map(([k, v]) => (
-                <tr key={k}><td style={{ padding: "3px 10px 3px 0", whiteSpace: "nowrap" }}><b>{k}</b></td><td style={{ padding: "3px 0" }}>{v}</td></tr>
-              ))}
-            </tbody>
-          </table>
-        </Modal>
-      )}
-
-      {dialog === "about" && (
-        <Modal title="О программе" onClose={() => setDialog(null)} width={380}>
-          <div style={{ fontSize: 12, display: "grid", gap: 7 }}>
-            <div style={{ font: "bold 16px Tahoma, sans-serif" }}>CQB СЕЛО · планировщик поля v1.2</div>
-            <div>Планировка CQB-полигона из тюков сена с расчётом количества тюков и сметы.</div>
-            <div>Тюк {BALE_L} × {BALE_T} м. Все координаты в метрах, сетка метрическая.</div>
-            <div>Поле до 1000 м. Подложка тянется без верхнего предела и крутится на любой угол 0…360°.</div>
-            <div style={{ opacity: 0.75 }}>Карты сохраняются в JSON на ваш компьютер. Ничего никуда не отправляется, работает без интернета.</div>
-          </div>
-        </Modal>
-      )}
+      {dialogs}
     </div>
   );
 }
@@ -1627,6 +2240,7 @@ export default function CQBSelo() {
 /* ============================ МЕЛКИЕ КОМПОНЕНТЫ ============================ */
 
 const miniBtnStyle = { font: "11px Tahoma", padding: "0 5px", cursor: "pointer", background: C.chrome, border: `1px solid ${C.chromeLo}` };
+const miniBtnBig = { ...miniBtnStyle, font: "16px Tahoma", minWidth: 36, height: 34, padding: "0 8px", touchAction: "manipulation" };
 
 /* Ползунок подложки.
    free  — верхнего предела нет: число вводится руками, шкала логарифмическая
@@ -1636,6 +2250,8 @@ const miniBtnStyle = { font: "11px Tahoma", padding: "0 5px", cursor: "pointer",
    minClamp — жёсткий нижний предел в режиме free; без него нижнего нет. */
 function BgSlider({ label, value, min, max, step, onChange, unit = "", free = false, wrap = false, minClamp = null, extra = null }) {
   const [draft, setDraft] = useState(null);
+  const compact = useCompact();
+  const mb = compact ? miniBtnBig : miniBtnStyle;
   const r1 = (v) => Math.round(v * 10) / 10;
   const norm = (v) => {
     if (!isFinite(v)) return value;
@@ -1655,43 +2271,60 @@ function BgSlider({ label, value, min, max, step, onChange, unit = "", free = fa
   const sliderStep = logMode ? 1 : step;
   const typed = free || wrap;
   return (
-    <div style={{ display: "grid", gap: 2 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, gap: 6 }}>
+    <div style={{ display: "grid", gap: compact ? 6 : 2 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: compact ? 14 : 11, gap: 6 }}>
         <span>{label}</span>
-        <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
-          <button type="button" onClick={() => onChange(norm(value - step))} style={miniBtnStyle}>−</button>
+        <span style={{ display: "inline-flex", gap: compact ? 5 : 3, alignItems: "center" }}>
+          <button type="button" onClick={() => onChange(norm(value - step))} style={mb}>−</button>
           {typed ? (
             <>
               <input type="number" value={draft == null ? r1(value) : draft} step={step}
                 onChange={(e) => { setDraft(e.target.value); const n = parseFloat(e.target.value); if (!isNaN(n)) onChange(norm(n)); }}
                 onBlur={() => setDraft(null)}
-                style={{ width: 66, textAlign: "right", font: "11px Tahoma, sans-serif", background: "#fff", border: "1px solid #9A9684", padding: "0 3px" }} />
-              {unit ? <span style={{ fontSize: 10.5, opacity: 0.75 }}>{unit.trim()}</span> : null}
+                style={compact
+                  ? { width: 84, height: 34, textAlign: "right", font: "16px Tahoma, sans-serif", background: "#fff", border: "1px solid #9A9684", padding: "0 5px" }
+                  : { width: 66, textAlign: "right", font: "11px Tahoma, sans-serif", background: "#fff", border: "1px solid #9A9684", padding: "0 3px" }} />
+              {unit ? <span style={{ fontSize: compact ? 13 : 10.5, opacity: 0.75 }}>{unit.trim()}</span> : null}
             </>
           ) : (
             <b style={{ minWidth: 42, textAlign: "right" }}>{r1(value)}{unit}</b>
           )}
-          <button type="button" onClick={() => onChange(norm(value + step))} style={miniBtnStyle}>+</button>
+          <button type="button" onClick={() => onChange(norm(value + step))} style={mb}>+</button>
         </span>
       </div>
       <input type="range" min={sliderMin} max={sliderMax} step={sliderStep}
         value={Math.max(sliderMin, Math.min(sliderMax, toSlider(value)))}
-        onChange={(e) => onChange(norm(fromSlider(+e.target.value)))} style={{ width: "100%" }} />
+        onChange={(e) => onChange(norm(fromSlider(+e.target.value)))} style={{ width: "100%", height: compact ? 30 : undefined, margin: compact ? 0 : undefined }} />
       {extra}
     </div>
   );
 }
 
 function Row({ label, children }) {
-  return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, fontSize: 11.5 }}><span>{label}</span>{children}</div>;
+  const compact = useCompact();
+  return <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: compact ? 10 : 6, fontSize: compact ? 14 : 11.5 }}><span>{label}</span>{children}</div>;
 }
 function Static({ children }) {
-  return <span style={{ background: "#fff", border: "1px solid #9A9684", padding: "1px 6px", minWidth: 66, textAlign: "right", fontSize: 11.5 }}>{children}</span>;
+  const compact = useCompact();
+  return <span style={{ background: "#fff", border: "1px solid #9A9684", padding: compact ? "5px 8px" : "1px 6px", minWidth: compact ? 96 : 66, textAlign: "right", fontSize: compact ? 14 : 11.5 }}>{children}</span>;
+}
+/* Флажок с подписью. На телефоне сам квадратик и строка крупнее — под палец. */
+function Check({ checked, onChange, children }) {
+  const compact = useCompact();
+  return (
+    <label style={{ display: "flex", gap: compact ? 10 : 6, alignItems: "center", fontSize: compact ? 14 : 11.5, minHeight: compact ? 34 : undefined }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)}
+        style={compact ? { width: 22, height: 22, margin: 0, flexShrink: 0 } : undefined} />{children}
+    </label>
+  );
 }
 /* Поле числа. Пока в нём стоит курсор, показываем ровно то, что набирают:
    иначе строку нельзя стереть и ввести заново — React возвращает старое число. */
 function NumIn({ value, onChange, min, max, step = 1, width = 66 }) {
   const [draft, setDraft] = useState(null);
+  const compact = useCompact();
+  /* 16 px — порог, ниже которого iPhone сам приближает страницу при вводе */
+  const big = compact ? { width: Math.max(width, 96), height: 36, fontSize: 16, padding: "2px 6px" } : null;
   return (
     <input type="number" value={draft == null ? value : draft} step={step} min={min} max={max}
       onChange={(e) => {
@@ -1700,19 +2333,21 @@ function NumIn({ value, onChange, min, max, step = 1, width = 66 }) {
         if (!isNaN(v)) onChange(Math.min(max == null ? 1e6 : max, Math.max(min == null ? -1e6 : min, v)));
       }}
       onBlur={() => setDraft(null)}
-      style={{ width, background: "#fff", border: "1px solid #9A9684", padding: "1px 4px", font: "11.5px Tahoma, sans-serif", textAlign: "right" }} />
+      style={{ width, background: "#fff", border: "1px solid #9A9684", padding: "1px 4px", font: "11.5px Tahoma, sans-serif", textAlign: "right", ...big }} />
   );
 }
 function Select({ value, onChange, options }) {
+  const compact = useCompact();
   return (
     <select value={value} onChange={(e) => onChange(e.target.value)}
-      style={{ width: 82, background: "#fff", border: "1px solid #9A9684", font: "11.5px Tahoma, sans-serif" }}>
+      style={{ width: 82, background: "#fff", border: "1px solid #9A9684", font: "11.5px Tahoma, sans-serif", ...(compact ? { width: 120, height: 36, fontSize: 16 } : null) }}>
       {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
     </select>
   );
 }
 function LegendRow({ label, children }) {
-  return <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11.5 }}>
+  const compact = useCompact();
+  return <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: compact ? 14 : 11.5 }}>
     <span style={{ width: 36, display: "flex", justifyContent: "center" }}>{children}</span><span>{label}</span>
   </div>;
 }
@@ -1723,5 +2358,11 @@ function StatusCell({ children, w, flex }) {
     background: C.chrome, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
   }}>{children}</div>;
 }
-const Th = ({ children, right }) => <th style={{ textAlign: right ? "right" : "left", padding: "3px 8px", borderBottom: `1px solid ${C.chromeLo}`, font: "bold 11px Tahoma, sans-serif" }}>{children}</th>;
-const Td = ({ children, right }) => <td style={{ textAlign: right ? "right" : "left", padding: "2px 8px", borderBottom: "1px solid #E8E6DE" }}>{children}</td>;
+const Th = ({ children, right }) => {
+  const compact = useCompact();
+  return <th style={{ textAlign: right ? "right" : "left", padding: compact ? "6px 7px" : "3px 8px", borderBottom: `1px solid ${C.chromeLo}`, font: `bold ${compact ? 12.5 : 11}px Tahoma, sans-serif` }}>{children}</th>;
+};
+const Td = ({ children, right }) => {
+  const compact = useCompact();
+  return <td style={{ textAlign: right ? "right" : "left", padding: compact ? "7px 7px" : "2px 8px", borderBottom: "1px solid #E8E6DE" }}>{children}</td>;
+};
