@@ -1,9 +1,23 @@
+import Preview3D from "./Preview3D.jsx";
 import React, { useState, useRef, useEffect, useMemo, useCallback, createContext, useContext } from "react";
 
 /* ============================ КОНСТАНТЫ ============================ */
 
 const BALE_L = 2.0;
 const BALE_T = 0.8;
+const DEFAULT_BALE = { l: 2, t: 0.8, h: 0.8 };
+const normBale = (b) => Object.fromEntries(Object.entries(DEFAULT_BALE).map(([k,v]) => [k, Number.isFinite(b?.[k]) && b[k] >= 0.1 && b[k] <= 20 ? b[k] : v]));
+const isWall = o => o.t === "wallH" || o.t === "wallV";
+const objectSize = (o,b) => isWall(o) ? {w:o.t === "wallH" ? o.l : b.t,h:o.t === "wallH" ? b.t : o.l} : o.t === "column" ? {w:b.l,h:b.t} : o.t === "stack" ? {w:b.l,h:2*b.t} : {w:ASSETS[o.t]?.w || 0.8,h:ASSETS[o.t]?.h || 0.8};
+const localPoint = (p,o) => { const a=-(o.rot||0)*Math.PI/180, x=p.x-o.x,y=p.y-o.y; return {x:x*Math.cos(a)-y*Math.sin(a),y:x*Math.sin(a)+y*Math.cos(a)}; };
+const drawnWall = dr => {
+ const dx=dr.x1-dr.x0,dy=dr.y1-dr.y0;
+ const raw=dr.dir === "wallFree" ? Math.hypot(dx,dy) : Math.abs(dr.dir === "wallH" ? dx : dy);
+ const step=dr.baleLength || DEFAULT_BALE.l;
+ const l=raw < 0.05 ? 0 : Math.max(1,Math.round(raw/step))*step;
+ if(dr.dir === "wallFree") return {t:"wallH",x:dr.x0,y:dr.y0,l,rot:Math.atan2(dy,dx)*180/Math.PI,tiers:dr.tiers};
+ return dr.dir === "wallH" ? {t:"wallH",x:dx<0?dr.x0-l:dr.x0,y:dr.y0,l,tiers:dr.tiers} : {t:"wallV",x:dr.x0,y:dy<0?dr.y0-l:dr.y0,l,tiers:dr.tiers};
+};
 
 const C = {
   chrome: "#D6D2C4", chromeHi: "#FFFFFF", chromeLo: "#84806F", chromeDk: "#B3AE9C",
@@ -11,6 +25,7 @@ const C = {
   hayFill: "#EEDFAB", hayLine: "#C2A85F", hayEdge: "#2E2612",
   wood: "#C99A5B", woodLine: "#8A6231", rubber: "#3A3A3C", steel: "#5B5B60",
   teamA: "#2D5AA8", teamB: "#B03434", sel: "#1E6FD9",
+  flag: "#E0A100", light: "#FFD84A",
 };
 
 const ZONE_KINDS = {
@@ -72,6 +87,7 @@ const SEED_FIGS = [
 ];
 
 const ASSETS = {
+  wallFree: { name: "Стена под любым углом", cat: "wall" },
   wallH:  { name: "Стена (гор.)",  cat: "wall" },
   wallV:  { name: "Стена (верт.)", cat: "wall" },
   column: { name: "Колонна",       cat: "prop", w: 0.8, h: 0.8 },
@@ -79,11 +95,171 @@ const ASSETS = {
   crate:  { name: "Поддон",        cat: "prop", w: 1.2, h: 0.8 },
   tire:   { name: "Покрышка",      cat: "prop", w: 0.7, h: 0.7 },
   barrel: { name: "Бочка",         cat: "prop", w: 0.6, h: 0.6 },
+  roll:   { name: "Рулон",         cat: "prop", w: 1.6, h: 1.6 },
   figA:   { name: "Игрок A",       cat: "fig" },
   figB:   { name: "Игрок B",       cat: "fig" },
+  flag:   { name: "Флаг",          cat: "mark", w: 1.0, h: 1.0 },
+  light:  { name: "Огонь (точка)", cat: "mark", w: 1.0, h: 1.0 },
   bomb:   { name: "Точка бомбы",   cat: "mark", w: 1.6, h: 1.6 },
   skull:  { name: "Мёртвая зона",  cat: "mark", w: 1.6, h: 1.6 },
 };
+
+/* ============================ ПРАВИЛА ДИСЦИПЛИН ============================
+   Каждая карта хранит свои правила: rules = { d: дисциплина, p: параметры, notes: свой текст }.
+   Тексты собраны по регламентам лиг; «Своя игра» и «Закладка» — шаблоны организатора. */
+
+const BASE_HITS = [
+  "Попадание шара в любую часть тела или снаряжения — поражение. Попадание в привод не считается.",
+  "Одновременная стрельба — поражены оба. Рикошет и выстрел без шара не считаются. Свой огонь считается.",
+  "Поражённый поднимает руку и молча уходит с поля кратчайшим путём. Кричать «аут» нельзя.",
+  "Заступ за границу поля — поражение. «Банг-банг» и сдача в плен не применяются.",
+];
+
+const BASE_GEAR = [
+  "Дульная энергия и вес шара — по лимиту в параметрах, хронометраж перед игрой.",
+  "Только одиночный огонь: одно нажатие — один выстрел, без программного разгона.",
+  "Механические магазины до 250 шаров, бункерные запрещены.",
+  "Трассерная подсветка с трассерными шарами обязательна.",
+  "Полная защита лица. Пиротехника, щиты, фонари и связь на поле запрещены — на сене это ещё и пожарная безопасность.",
+];
+
+const RULESETS = {
+  flag5: {
+    title: "5×5 · Центральный флаг", short: "Флаг 5×5",
+    src: "Speedsoft Russia (правила от 01.03.2025), SpeedQB",
+    defaults: { players: 5, subs: 2, roundMin: 3, breakSec: 60, rounds: 3, joule: 1.5, system: "Double elimination: матч до 2 побед из 3 раундов" },
+    goal: [
+      "Флаг стоит в центре поля. Команда должна взять его и донести до стартовой стены соперника.",
+      "Раунд заканчивается, когда флаг донесён, вышло время или на поле не осталось живых у одной из команд.",
+      "После каждого раунда команды меняются сторонами.",
+    ],
+    start: [
+      "Команда стоит у своей стартовой стены. Ствол привода и одна нога касаются стены.",
+      "Старт по звуковому сигналу старшего судьи. Раньше сигнала — фальстарт.",
+    ],
+    hits: [...BASE_HITS, "Поражённый с флагом бросает его не дальше 1 м от места попадания."],
+    score: [
+      ["Поражение соперника", "5 за каждого"],
+      ["Первый захват флага, пока у соперника есть живые", "25"],
+      ["Флаг донесён до стартовой стены соперника", "25"],
+      ["Бонус: флаг донесён без потери после захвата", "25"],
+      ["Бонус: флаг донесён при живом сопернике", "25 + 5 за каждого живого"],
+    ],
+    scoreNote: "Максимум 125 очков за раунд. В круговой системе матч — 2 раунда, за победу 3 балла, ничья 1, поражение 0.",
+    penalties: [
+      ["Не признал попадание", "−50, сопернику +25, удаление до конца матча"],
+      ["Подсказки с трибуны, общение выбывших с живыми", "−25"],
+      ["Стрельба вслепую или с приводом над головой", "−25"],
+      ["Сдвинул фигуру, перелез через неё или залез на неё", "−25"],
+      ["Флаг сброшен дальше 1 м или с задержкой", "−25"],
+      ["Фальстарт", "−25"],
+      ["Медленный уход с поля, сбор магазинов", "−25"],
+    ],
+    gear: BASE_GEAR,
+  },
+  lights3: {
+    title: "3×3 · Огни", short: "Огни 3×3",
+    src: "Competitive Speedsoft League (CSL), формат 3v3",
+    defaults: { players: 3, subs: 2, roundMin: 2, breakSec: 60, rounds: 3, joule: 1.5, system: "3 раунда по сумме очков, финал — 5 раундов" },
+    goal: [
+      "На поле 7 огней: по 3 на каждой половине и 1 в центре.",
+      "Команды захватывают огни и удерживают их до конца раунда.",
+      "Раунд заканчивается, когда захвачены все огни или одна команда выбита полностью.",
+    ],
+    start: [
+      "Команда стоит у своей стартовой стены, старт по сигналу судьи.",
+      "На поле обязательно играет хотя бы один игрок с пистолетом.",
+    ],
+    hits: BASE_HITS,
+    score: [
+      ["Огонь на половине поля", "1"],
+      ["Центральный огонь", "3"],
+      ["Поражение соперника", "0"],
+    ],
+    scoreNote: "Побеждает команда с большей суммой очков за все раунды матча.",
+    penalties: [
+      ["Не признал попадание, 1-й раз", "−5 и проигрыш раунда"],
+      ["2-й раз", "−5, проигрыш раунда, следующий раунд — в меньшинстве"],
+      ["3-й раз", "−5, проигрыш раунда, в меньшинстве до конца турнира"],
+      ["4-й раз", "дисквалификация команды"],
+      ["Стрельба по огню", "−2"],
+    ],
+    gear: BASE_GEAR,
+  },
+  duel: {
+    title: "1×1 / 2×2 · Дуэль", short: "Дуэль",
+    src: "Battalion Airsoft Arena (1v1, до 3 побед из 5), Speedsoft Russia 2×2, бонусная попытка NSL",
+    defaults: { players: 1, subs: 0, roundMin: 2, breakSec: 60, rounds: 5, joule: 1.5, system: "До 3 побед из 5 раундов" },
+    goal: [
+      "Флага нет. Раунд выигрывает тот, кто выбьет соперника (в 2×2 — обоих соперников).",
+      "Что делать, если время вышло и живы оба, решает организатор: переигровка или ничья.",
+      "Подходит как тай-брейк: при равенстве очков в 5×5 капитаны играют дуэль на этой карте.",
+    ],
+    start: ["Старт от стартовых стен по сигналу судьи. Стороны меняются каждый раунд."],
+    hits: BASE_HITS,
+    score: [["Победа в раунде", "1"]],
+    scoreNote: "Матч до 3 побед.",
+    penalties: [
+      ["Не признал попадание", "проигрыш раунда; повтор — проигрыш матча"],
+      ["Фальстарт", "проигрыш раунда"],
+    ],
+    gear: BASE_GEAR,
+  },
+  bomb: {
+    title: "CQB · Закладка бомбы", short: "Закладка",
+    src: "Шаблон организатора. Правьте под свою игру в поле «Свои правила».",
+    defaults: { players: 5, subs: 2, roundMin: 5, breakSec: 120, rounds: 6, joule: 1.5, system: "Смена ролей атака/защита после половины раундов" },
+    goal: [
+      "Атака выходит из зоны START и должна заложить бомбу в зоне BOMB.",
+      "Защита выходит из SPAWN B и не даёт заложить бомбу до конца времени.",
+      "Закладка засчитывается, когда игрок атаки простоял в зоне BOMB с бомбой нужное время (задайте в «Своих правилах»).",
+    ],
+    start: ["Старт по сигналу судьи. В RED-зону заходить нельзя.", "Мёртвая зона — место ожидания поражённых."],
+    hits: BASE_HITS,
+    score: [["Бомба заложена", "раунд атаке"], ["Время вышло или атака выбита", "раунд защите"]],
+    scoreNote: "Побеждает команда, взявшая больше раундов.",
+    penalties: [["Не признал попадание", "удаление до конца раунда, на усмотрение судьи — больше"]],
+    gear: BASE_GEAR,
+  },
+  custom: {
+    title: "Своя игра", short: "Своя",
+    src: "Правила пишет организатор.",
+    defaults: { players: 5, subs: 2, roundMin: 3, breakSec: 60, rounds: 3, joule: 1.5, system: "" },
+    goal: [], start: [], hits: BASE_HITS, score: [], scoreNote: "", penalties: [], gear: BASE_GEAR,
+  },
+};
+const RULE_KEYS = ["flag5", "lights3", "duel", "bomb", "custom"];
+const defaultRules = (d = "custom") => ({ d, p: { ...RULESETS[d].defaults }, notes: "" });
+const normRules = (r) => {
+  if (!r || !RULESETS[r.d]) return defaultRules("custom");
+  return { d: r.d, p: { ...RULESETS[r.d].defaults, ...(r.p || {}) }, notes: r.notes || "" };
+};
+const rulesLine = (r) => {
+  const p = r.p;
+  const vs = p.players > 0 ? `${p.players} на ${p.players}` : "";
+  return [vs, `раунд ${p.roundMin} мин`, `раундов ${p.rounds}`].filter(Boolean).join(" · ");
+};
+
+/* Правила карты простым текстом — чтобы отправить игрокам в чат. */
+function rulesToText(r, mapName, field) {
+  const rs = RULESETS[r.d], p = r.p;
+  const out = [];
+  out.push(`${mapName} — ${rs.title}`);
+  if (field) out.push(`Поле ${field.w} × ${field.h} м`);
+  out.push("");
+  out.push(`Игроков: ${p.players} + ${p.subs} запасных · раунд ${p.roundMin} мин · между раундами ${p.breakSec} с · раундов ${p.rounds} · до ${p.joule} Дж`);
+  if (p.system) out.push(`Система: ${p.system}`);
+  const block = (title, arr) => { if (arr && arr.length) { out.push(""); out.push(title.toUpperCase()); arr.forEach((t) => out.push("• " + t)); } };
+  block("Цель", rs.goal);
+  block("Старт", rs.start);
+  block("Поражение", rs.hits);
+  if (rs.score.length) { out.push(""); out.push("ОЧКИ"); rs.score.forEach(([a, b]) => out.push(`• ${a} — ${b}`)); if (rs.scoreNote) out.push(rs.scoreNote); }
+  if (rs.penalties.length) { out.push(""); out.push("ШТРАФЫ"); rs.penalties.forEach(([a, b]) => out.push(`• ${a} — ${b}`)); }
+  block("Допуск", rs.gear);
+  if (r.notes && r.notes.trim()) { out.push(""); out.push("ПРАВИЛА КАРТЫ"); out.push(r.notes.trim()); }
+  out.push(""); out.push(`Основа: ${rs.src}`);
+  return out.join("\n");
+}
 
 /* ============================ УТИЛИТЫ ============================ */
 
@@ -98,7 +274,7 @@ const detectCoarse = () => {
 
 let _uid = 0;
 const uid = (p) => `${p}_${Date.now().toString(36)}_${(_uid++).toString(36)}`;
-const snapTo = (v, s) => Math.round(v / s) * s;
+const snapTo = (v, s) => s > 0 ? Math.round(v / s) * s : Math.round(v * 1000) / 1000;
 const r1 = (v) => Math.round(v * 10) / 10;
 const baleCount = (len, tiers) => Math.ceil(Math.max(len, 0.01) / BALE_L) * (tiers || 1);
 
@@ -222,6 +398,16 @@ async function fetchSharedMaps() {
     else if (it && it.file) out.push({ name: it.name || it.file.replace(/\.json$/i, ""), url: "maps/" + it.file, author: it.author, note: it.note });
   });
   return out;
+}
+
+/* Какие карты из папки maps отобраны в турнир — у каждого своё, в браузере. */
+const POOL_KEY = "cqb_selo_pool";
+function loadPoolSel() {
+  try { const v = JSON.parse(window.localStorage.getItem(POOL_KEY) || "[]"); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+}
+function savePoolSel(v) {
+  try { window.localStorage.setItem(POOL_KEY, JSON.stringify(v)); } catch (e) { /* без хранилища отбор живёт до перезагрузки */ }
 }
 
 /* ============================ ЭЛЕМЕНТЫ ИНТЕРФЕЙСА ============================ */
@@ -349,6 +535,7 @@ const ToolIcon = ({ kind, w = 30, h = 26 }) => {
   const s = { width: w, height: h };
   switch (kind) {
     case "select": return (<svg {...s} viewBox="0 0 24 24"><path d="M5 3l13 9-6 1 3 7-3 1-3-7-4 4z" fill="#111" /></svg>);
+    case "wallFree": return (<svg width="32" height="28" viewBox="0 0 32 28"><path d="M4 23L27 4" stroke={C.hayLine} strokeWidth="7"/><path d="M4 23L27 4" stroke={C.hayEdge} strokeWidth="1"/></svg>);
     case "wallH": return (<svg {...s} viewBox="0 0 32 24"><rect x="2" y="8" width="28" height="9" fill={C.hayFill} stroke={C.hayEdge} /><path d="M4 10.5h24M4 13h24M4 15h24" stroke={C.hayLine} /></svg>);
     case "wallV": return (<svg {...s} viewBox="0 0 24 32"><rect x="8" y="2" width="9" height="28" fill={C.hayFill} stroke={C.hayEdge} /><path d="M10.5 4v24M13 4v24M15 4v24" stroke={C.hayLine} /></svg>);
     case "place": return (<svg {...s} viewBox="0 0 24 24"><path d="M3 17l10-10 3 3L6 20H3z" fill={C.wood} stroke="#111" /><path d="M17 3v6M14 6h6" stroke="#1a7a1a" strokeWidth="2.5" /></svg>);
@@ -362,6 +549,7 @@ const ToolIcon = ({ kind, w = 30, h = 26 }) => {
 const AssetThumb = ({ t }) => {
   const box = { width: "100%", height: 44 };
   switch (t) {
+    case "wallFree": return (<svg width="32" height="28" viewBox="0 0 32 28"><path d="M4 23L27 4" stroke={C.hayLine} strokeWidth="7"/><path d="M4 23L27 4" stroke={C.hayEdge} strokeWidth="1"/></svg>);
     case "wallH": return (<svg style={box} viewBox="0 0 40 30"><rect x="3" y="10" width="34" height="11" fill={C.hayFill} stroke={C.hayEdge} /><path d="M5 13h30M5 15.5h30M5 18h30" stroke={C.hayLine} /></svg>);
     case "wallV": return (<svg style={box} viewBox="0 0 30 40"><rect x="10" y="3" width="11" height="34" fill={C.hayFill} stroke={C.hayEdge} /><path d="M13 5v30M15.5 5v30M18 5v30" stroke={C.hayLine} /></svg>);
     case "column": return (<svg style={box} viewBox="0 0 40 30"><rect x="13" y="9" width="14" height="13" fill={C.hayFill} stroke={C.hayEdge} /><path d="M15 12h10M15 15h10M15 18h10" stroke={C.hayLine} /></svg>);
@@ -373,22 +561,25 @@ const AssetThumb = ({ t }) => {
     case "figB": return (<svg style={box} viewBox="0 0 40 30"><circle cx="20" cy="11" r="4.5" fill={C.teamB} stroke="#111" /><path d="M20 15.5c-5 0-7.5 3.5-7.5 8h15c0-4.5-2.5-8-7.5-8z" fill={C.teamB} stroke="#111" /></svg>);
     case "bomb": return (<svg style={box} viewBox="0 0 40 30"><circle cx="19" cy="18" r="8.5" fill="#111" /><path d="M25 11l3-3M27 9l3 1-1-3" stroke="#D9A400" strokeWidth="1.6" fill="none" /></svg>);
     case "skull": return (<svg style={box} viewBox="0 0 40 30"><circle cx="20" cy="11" r="7" fill="#111" /><circle cx="17.4" cy="10.5" r="2" fill="#fff" /><circle cx="22.6" cy="10.5" r="2" fill="#fff" /><path d="M12 26l16-8M12 18l16 8" stroke="#111" strokeWidth="3.4" strokeLinecap="round" /></svg>);
+    case "roll": return (<svg style={box} viewBox="0 0 40 30"><circle cx="20" cy="15" r="12" fill={C.hayFill} stroke={C.hayEdge} /><circle cx="20" cy="15" r="8" fill="none" stroke={C.hayLine} /><circle cx="20" cy="15" r="4" fill="none" stroke={C.hayLine} /></svg>);
+    case "flag": return (<svg style={box} viewBox="0 0 40 30"><path d="M14 27V4" stroke="#111" strokeWidth="2" /><path d="M14 4l15 5-15 5z" fill={C.flag} stroke="#111" /><ellipse cx="14" cy="27" rx="4" ry="1.4" fill="#111" opacity=".3" /></svg>);
+    case "light": return (<svg style={box} viewBox="0 0 40 30"><circle cx="20" cy="15" r="6" fill={C.light} stroke="#111" /><path d="M20 3v4M20 23v4M8 15h4M28 15h4M11.5 6.5l3 3M25.5 20.5l3 3M28.5 6.5l-3 3M14.5 20.5l-3 3" stroke="#111" strokeWidth="1.6" /></svg>);
     default: return null;
   }
 };
 
 /* ============================ ОТРИСОВКА ОБЪЕКТОВ ============================ */
 
-function HayWall({ o, selected, ss = 1 }) {
+function HayWall({ o, selected, ss = 1, bale = DEFAULT_BALE }) {
   const horiz = o.t === "wallH";
-  const n = Math.ceil(o.l / BALE_L);
+  const n = Math.ceil(o.l / bale.l);
   const bales = [];
   for (let i = 0; i < n; i++) {
-    const seg = Math.min(BALE_L, o.l - i * BALE_L);
+    const seg = Math.min(bale.l, o.l - i * bale.l);
     if (seg <= 0.02) break;
-    const bx = horiz ? o.x + i * BALE_L : o.x;
-    const by = horiz ? o.y : o.y + i * BALE_L;
-    const bw = horiz ? seg : BALE_T, bh = horiz ? BALE_T : seg;
+    const bx = horiz ? o.x + i * bale.l : o.x;
+    const by = horiz ? o.y : o.y + i * bale.l;
+    const bw = horiz ? seg : bale.t, bh = horiz ? bale.t : seg;
     bales.push(
       <g key={i}>
         <rect x={bx} y={by} width={bw} height={bh} fill="url(#hay)" stroke={C.hayEdge} strokeWidth={0.075} />
@@ -396,14 +587,15 @@ function HayWall({ o, selected, ss = 1 }) {
       </g>
     );
   }
-  return (<g>{bales}
-    {selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={(horiz ? o.l : BALE_T) + 0.3} height={(horiz ? BALE_T : o.l) + 0.3} fill="none" stroke={C.sel} strokeWidth={0.16 * ss} strokeDasharray={`${0.5 * ss} ${0.3 * ss}`} />}
+  return (<g transform={`rotate(${o.rot || 0} ${o.x} ${o.y})`}>{bales}
+    {selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={(horiz ? o.l : bale.t) + 0.3} height={(horiz ? bale.t : o.l) + 0.3} fill="none" stroke={C.sel} strokeWidth={0.16 * ss} strokeDasharray={`${0.5 * ss} ${0.3 * ss}`} />}
+    {selected && <text x={o.x} y={o.y - 0.4} fontSize={0.9 * ss} fill={C.sel}>{Math.round(o.l*100)/100} м · {Math.round((o.rot||0)*10)/10}°</text>}
   </g>);
 }
 
-function Prop({ o, selected, ss = 1 }) {
+function Prop({ o, selected, ss = 1, bale = DEFAULT_BALE }) {
   const a = ASSETS[o.t] || {};
-  const w = a.w || 0.8, h = a.h || 0.8;
+  const {w,h} = objectSize(o,bale);
   let body = null;
   if (o.t === "column") {
     body = (<><rect x={o.x} y={o.y} width={w} height={h} fill="url(#hay)" stroke={C.hayEdge} strokeWidth={0.075} />
@@ -426,6 +618,27 @@ function Prop({ o, selected, ss = 1 }) {
       <circle cx={o.x + w / 2 - 0.08} cy={o.y + h / 2 + 0.12} r={w / 2.9} fill="#111" />
       <path d={`M${o.x + w * 0.72} ${o.y + h * 0.3} L${o.x + w * 0.9} ${o.y + h * 0.12}`} stroke="#111" strokeWidth={0.09} fill="none" />
       <path d={`M${o.x + w * 0.86} ${o.y + h * 0.16} l0.22 0.06 l-0.06 -0.24 l0.2 0.1`} stroke="#D9A400" strokeWidth={0.1} fill="none" /></>);
+  } else if (o.t === "roll") {
+    const cx = o.x + w / 2, cy = o.y + h / 2;
+    body = (<><circle cx={cx} cy={cy} r={w / 2} fill="url(#hay)" stroke={C.hayEdge} strokeWidth={0.075} />
+      <circle cx={cx} cy={cy} r={w * 0.33} fill="none" stroke={C.hayEdge} strokeWidth={0.04} opacity={0.55} />
+      <circle cx={cx} cy={cy} r={w * 0.16} fill="none" stroke={C.hayEdge} strokeWidth={0.04} opacity={0.55} /></>);
+  } else if (o.t === "flag") {
+    const px = o.x + w * 0.3;
+    body = (<><circle cx={o.x + w / 2} cy={o.y + h / 2} r={w * 0.62} fill="#fff" stroke="#111" strokeWidth={0.06} />
+      <line x1={px} y1={o.y + h * 0.95} x2={px} y2={o.y + h * 0.08} stroke="#111" strokeWidth={0.09} />
+      <path d={`M${px} ${o.y + h * 0.08} L${o.x + w * 0.9} ${o.y + h * 0.3} L${px} ${o.y + h * 0.52} Z`} fill={C.flag} stroke="#111" strokeWidth={0.05} /></>);
+  } else if (o.t === "light") {
+    const cx = o.x + w / 2, cy = o.y + h / 2;
+    body = (<><circle cx={cx} cy={cy} r={w * 0.62} fill="none" stroke="#111" strokeWidth={0.05} strokeDasharray="0.12 0.1" />
+      <circle cx={cx} cy={cy} r={w * 0.36} fill={C.light} stroke="#111" strokeWidth={0.07} />
+      {[0, 45, 90, 135].map((a) => {
+        const r0 = w * 0.42, r1v = w * 0.56, rad = (a * Math.PI) / 180;
+        return <g key={a} stroke="#111" strokeWidth={0.05}>
+          <line x1={cx + Math.cos(rad) * r0} y1={cy + Math.sin(rad) * r0} x2={cx + Math.cos(rad) * r1v} y2={cy + Math.sin(rad) * r1v} />
+          <line x1={cx - Math.cos(rad) * r0} y1={cy - Math.sin(rad) * r0} x2={cx - Math.cos(rad) * r1v} y2={cy - Math.sin(rad) * r1v} />
+        </g>;
+      })}</>);
   } else if (o.t === "skull") {
     const cx = o.x + w / 2, cy = o.y + h / 2;
     body = (<><path d={`M${cx - w * 0.45} ${cy + h * 0.42} L${cx + w * 0.45} ${cy - h * 0.05} M${cx - w * 0.45} ${cy - h * 0.05} L${cx + w * 0.45} ${cy + h * 0.42}`} stroke="#111" strokeWidth={0.24} strokeLinecap="round" />
@@ -433,13 +646,13 @@ function Prop({ o, selected, ss = 1 }) {
       <circle cx={cx - w * 0.14} cy={cy - h * 0.22} r={w * 0.1} fill="#fff" />
       <circle cx={cx + w * 0.14} cy={cy - h * 0.22} r={w * 0.1} fill="#fff" /></>);
   }
-  return (<g>{body}{selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={w + 0.3} height={h + 0.3} fill="none" stroke={C.sel} strokeWidth={0.14 * ss} strokeDasharray={`${0.4 * ss} ${0.25 * ss}`} />}</g>);
+  return (<g transform={`rotate(${o.rot || 0} ${o.x} ${o.y})`}>{body}{selected && <rect x={o.x - 0.15} y={o.y - 0.15} width={w + 0.3} height={h + 0.3} fill="none" stroke={C.sel} strokeWidth={0.14 * ss} strokeDasharray={`${0.4 * ss} ${0.25 * ss}`} />}</g>);
 }
 
 function Figure({ o, selected, ss = 1 }) {
   const col = o.t === "figA" ? C.teamA : C.teamB;
   return (
-    <g transform={`translate(${o.x},${o.y})`}>
+    <g transform={`translate(${o.x},${o.y}) rotate(${o.rot || 0})`}>
       <ellipse cx={0} cy={0.1} rx={0.55} ry={0.4} fill="#000" opacity={0.12} />
       <path d="M0 -0.16 c-0.5 0 -0.72 0.42 -0.72 0.86 h1.44 c0 -0.44 -0.22 -0.86 -0.72 -0.86 z" fill={col} stroke="#111" strokeWidth={0.05} />
       <circle cx={0} cy={-0.34} r={0.29} fill={col} stroke="#111" strokeWidth={0.05} />
@@ -455,6 +668,8 @@ export default function CQBSelo() {
   const [objects, setObjects] = useState(seed.objects);
   const [zones, setZones] = useState(seed.zones);
   const [field, setField] = useState({ w: 50, h: 40, grid: 5 });
+  const bale = normBale(field.bale);
+  const baleCount = (len, tiers) => Math.ceil(Math.max(len, 0.01) / bale.l - 1e-9) * (tiers || 1);
   const [tool, setTool] = useState("select");
   const [asset, setAsset] = useState("column");
   const [zoneKind, setZoneKind] = useState("spawnA");
@@ -477,6 +692,11 @@ export default function CQBSelo() {
   const [tablesOpen, setTablesOpen] = useState(true);
   const [library, setLibrary] = useState([]);
   const [mapName, setMapName] = useState("Без названия");
+  const [rules, setRules] = useState(() => defaultRules("bomb"));
+  const [poolSel, setPoolSel] = useState(loadPoolSel);
+  const [poolFilter, setPoolFilter] = useState("all");
+  const [poolOnly, setPoolOnly] = useState(false);
+  const [rulesNote, setRulesNote] = useState("");
   const [shareUrl, setShareUrl] = useState("");
   const [shareNote, setShareNote] = useState("");
   const [shared, setShared] = useState({ state: "idle", list: [], err: "" });
@@ -533,14 +753,14 @@ export default function CQBSelo() {
   }, []);
 
   const pushHistory = useCallback(() => {
-    setHistory((h) => [...h.slice(-40), { objects, zones, bg }]);
-  }, [objects, zones, bg]);
+    setHistory((h) => [...h.slice(-40), { objects, zones, bg, field }]);
+  }, [objects, zones, bg, field]);
 
   const undo = useCallback(() => {
     setHistory((h) => {
       if (!h.length) { setStatus("Отменять нечего"); return h; }
       const last = h[h.length - 1];
-      setObjects(last.objects); setZones(last.zones); setBg(last.bg);
+      setObjects(last.objects); setZones(last.zones); setBg(last.bg); if(last.field) setField(last.field);
       setSelected(null); setSelZone(null); setStatus("Отменено последнее действие");
       return h.slice(0, -1);
     });
@@ -556,8 +776,8 @@ export default function CQBSelo() {
     const stackBales = stacks.reduce((s, o) => s + 2 * (o.tiers || 1), 0);
     const groups = {};
     walls.forEach((o) => {
-      const key = r1(o.l) + "|" + (o.tiers || 1);
-      if (!groups[key]) groups[key] = { len: r1(o.l), tiers: o.tiers || 1, n: 0 };
+      const key = o.l + "|" + (o.tiers || 1);
+      if (!groups[key]) groups[key] = { len: o.l, tiers: o.tiers || 1, n: 0 };
       groups[key].n++;
     });
     const rows = Object.values(groups).map((g) => ({ ...g, per: baleCount(g.len, g.tiers), total: g.n * baleCount(g.len, g.tiers) }))
@@ -569,9 +789,10 @@ export default function CQBSelo() {
       crates: list.filter((o) => o.t === "crate").length,
       tires: list.filter((o) => o.t === "tire").length,
       barrels: list.filter((o) => o.t === "barrel").length,
+      rolls: list.filter((o) => o.t === "roll").length,
       figs: list.filter((o) => o.t === "figA" || o.t === "figB"),
     };
-  }, [objects]);
+  }, [objects, bale.l, bale.t]);
 
   const zoneOccupancy = useCallback((z) => {
     let a = 0, b = 0;
@@ -595,17 +816,14 @@ export default function CQBSelo() {
         if (r < 0.75) return o;
         d = r - 0.75;
       } else {
-        let x0 = o.x, y0 = o.y, x1, y1;
-        if (o.t === "wallH") { x1 = o.x + o.l; y1 = o.y + BALE_T; }
-        else if (o.t === "wallV") { x1 = o.x + BALE_T; y1 = o.y + o.l; }
-        else { const a = ASSETS[o.t] || {}; x1 = o.x + (a.w || 0.8); y1 = o.y + (a.h || 0.8); }
-        if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) return o;
-        d = Math.hypot(Math.max(x0 - p.x, 0, p.x - x1), Math.max(y0 - p.y, 0, p.y - y1));
+        const q = localPoint(p,o), {w,h} = objectSize(o,bale);
+        if(q.x >= 0 && q.x <= w && q.y >= 0 && q.y <= h) return o;
+        d = Math.hypot(Math.max(-q.x,0,q.x-w),Math.max(-q.y,0,q.y-h));
       }
       if (d <= tol && d < bestD) { best = o; bestD = d; }
     }
     return best;
-  }, [objects]);
+  }, [objects, bale.l, bale.t]);
 
   const hitZone = useCallback((p) => {
     const zs = Object.values(zones);
@@ -670,7 +888,7 @@ export default function CQBSelo() {
         const v = viewRef.current;
         setView({ mpp: v.mpp, cx: dr.ox - (e.clientX - dr.sx) * v.mpp, cy: dr.oy - (e.clientY - dr.sy) * v.mpp });
       } else if (dr.kind === "draw" || dr.kind === "zone") {
-        const nd = { ...dr, x1: snapTo(p.x, s), y1: snapTo(p.y, s) };
+        const nd = { ...dr, x1: dr.kind === "draw" ? p.x : snapTo(p.x, s), y1: dr.kind === "draw" ? p.y : snapTo(p.y, s) };
         dragRef.current = nd;
         setGhost(nd);
       } else if (dr.kind === "move") {
@@ -696,16 +914,12 @@ export default function CQBSelo() {
       if (dr.kind === "tap") {
         if (e.type !== "pointercancel" && dr.fn) dr.fn();
       } else if (dr.kind === "draw") {
-        const horiz = dr.dir === "wallH";
-        const len = snapTo(Math.abs(horiz ? dr.x1 - dr.x0 : dr.y1 - dr.y0), s);
-        if (len >= 1) {
-          const id = uid("w");
-          const o = horiz
-            ? { id, t: "wallH", x: Math.min(dr.x0, dr.x1), y: dr.y0, l: len, tiers: dr.tiers }
-            : { id, t: "wallV", x: dr.x0, y: Math.min(dr.y0, dr.y1), l: len, tiers: dr.tiers };
-          setObjects((m) => ({ ...m, [id]: o }));
+        const wall = drawnWall(dr);
+        if (e.type !== "pointercancel" && wall.l >= 0.1) {
+          const id = uid("w"), o = {id,...wall};
+          setObjects(m => ({...m,[id]:o}));
           setSelected(id); setSelZone(null);
-          setStatus(`Стена ${len} м · ${baleCount(len, dr.tiers)} тюков`);
+          setStatus(`Стена ${r1(wall.l)} м · ${baleCount(wall.l, dr.tiers)} тюков`);
         }
       } else if (dr.kind === "zone") {
         const x = Math.min(dr.x0, dr.x1), y = Math.min(dr.y0, dr.y1);
@@ -716,7 +930,7 @@ export default function CQBSelo() {
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
-  }, [toWorld]);
+  }, [toWorld, bale.l]);
   const beginDragRef = useRef(beginDrag);
   useEffect(() => { beginDragRef.current = beginDrag; }, [beginDrag]);
 
@@ -812,9 +1026,9 @@ export default function CQBSelo() {
       beginDrag({ kind: "pan", sx: ev.clientX, sy: ev.clientY, ox: v.cx, oy: v.cy }, pid);
       return;
     }
-    if (tool === "wallH" || tool === "wallV") {
+    if (tool === "wallH" || tool === "wallV" || tool === "wallFree") {
       pushHistory();
-      const d = { kind: "draw", dir: tool, tiers, x0: snapTo(p.x, snap), y0: snapTo(p.y, snap), x1: snapTo(p.x, snap), y1: snapTo(p.y, snap) };
+      const d = { kind: "draw", dir: tool, tiers, baleLength: bale.l, x0: snapTo(p.x, snap), y0: snapTo(p.y, snap), x1: snapTo(p.x, snap), y1: snapTo(p.y, snap) };
       setGhost(d); beginDrag(d, pid); return;
     }
     if (tool === "zone") {
@@ -825,10 +1039,10 @@ export default function CQBSelo() {
     if (tool === "place") {
       const placeIt = () => {
         pushHistory();
-        const a = ASSETS[asset]; const id = uid("o");
+        const a = ASSETS[asset]; const id = uid("o"); const size = objectSize({t:asset},bale);
         const o = a.cat === "fig"
           ? { id, t: asset, x: r1(p.x), y: r1(p.y) }
-          : { id, t: asset, x: snapTo(p.x - (a.w || 0) / 2, snap), y: snapTo(p.y - (a.h || 0) / 2, snap), tiers: (asset === "column" || asset === "stack") ? tiers : 1 };
+          : { id, t: asset, x: snapTo(p.x - size.w / 2, snap), y: snapTo(p.y - size.h / 2, snap), tiers: (asset === "column" || asset === "stack") ? tiers : 1 };
         setObjects((m) => ({ ...m, [id]: o }));
         setSelected(id); setSelZone(null);
         setStatus(`Добавлено: ${a.name}`);
@@ -897,6 +1111,14 @@ export default function CQBSelo() {
     setView({ mpp, cx: -padL - (boxSize.w * mpp - needW) / 2, cy: -padTop - (boxSize.h * mpp - needH) / 2 });
   }, [field, boxSize]);
 
+  /* Открыли другую карту — вписываем её поле в экран, когда размер поля уже применён. */
+  const fitNext = useRef(false);
+  useEffect(() => {
+    if (!fitNext.current) return;
+    fitNext.current = false;
+    fitView();
+  }, [fitView]);
+
   /* На компьютере при изменении окна поле вписывается заново, как раньше.
      На телефоне высота прыгает от клавиатуры и панелей браузера — там
      сохраняем текущий масштаб и держим центр, а вписываем только при
@@ -946,18 +1168,19 @@ export default function CQBSelo() {
   const refreshLibrary = useCallback(() => setLibrary(listLibrary()), []);
 
   const currentDoc = useCallback((withBg) => ({
-    v: 3, name: mapName, at: Date.now(), field, objects, zones, price,
+    v: 4, name: mapName, at: Date.now(), field, objects, zones, price, rules,
     bg: withBg ? bg : null,
-  }), [mapName, field, objects, zones, price, bg]);
+  }), [mapName, field, objects, zones, price, bg, rules]);
 
   const applyDoc = useCallback((d, label) => {
     pushHistory();
-    if (d.field) setField(d.field);
+    if (d.field) { fitNext.current = true; setField({ ...d.field }); }
     if (d.objects) setObjects(d.objects);
     if (d.zones) setZones(d.zones);
     if (d.price != null) setPrice(d.price);
     setBg(d.bg || null);
     if (d.name) setMapName(d.name);
+    setRules(normRules(d.rules));
     setSelected(null); setSelZone(null);
     setStatus(label);
   }, [pushHistory]);
@@ -988,21 +1211,60 @@ export default function CQBSelo() {
   }, [refreshLibrary]);
 
   /* ---- общие карты из папки maps ---- */
+  /* Пул карт: список файлов из папки maps, затем каждый файл читаем,
+     чтобы показать дисциплину, размер поля и пояснение. */
   const openShared = useCallback(() => {
     setDialog("shared");
     setShared({ state: "loading", list: [], err: "" });
     fetchSharedMaps()
-      .then((list) => setShared({ state: "ok", list, err: "" }))
+      .then(async (list) => {
+        setShared({ state: "ok", list, err: "" });
+        const full = await Promise.all(list.map(async (it) => {
+          try {
+            const r = await fetch(it.url, { cache: "no-cache" });
+            if (!r.ok) throw new Error("нет файла");
+            const d = await r.json();
+            const rr = normRules(d.rules);
+            return { ...it, doc: d, d: rr.d, line: rulesLine(rr), field: d.field, title: d.name || it.name, note: it.note || rr.notes };
+          } catch (e) { return { ...it, bad: true }; }
+        }));
+        setShared((s0) => ({ ...s0, list: full }));
+      })
       .catch((e) => setShared({ state: "err", list: [], err: e.message }));
   }, []);
 
-  const loadShared = useCallback((item) => {
+  const loadShared = useCallback((item, thenRules) => {
     setShared((s0) => ({ ...s0, err: "" }));
-    fetch(item.url, { cache: "no-cache" })
-      .then((r) => { if (!r.ok) throw new Error("файл не открылся"); return r.json(); })
-      .then((d) => { applyDoc(d, `Открыта общая карта «${d.name || item.name}»`); setMapName(d.name || item.name); setDialog(null); })
+    const got = item.doc ? Promise.resolve(item.doc) : fetch(item.url, { cache: "no-cache" })
+      .then((r) => { if (!r.ok) throw new Error("файл не открылся"); return r.json(); });
+    got
+      .then((d) => { applyDoc(d, `Открыта карта пула «${d.name || item.name}»`); setMapName(d.name || item.name); setDialog(thenRules ? "rules" : null); })
       .catch((e) => setShared((s0) => ({ ...s0, err: "Не удалось открыть: " + e.message })));
   }, [applyDoc]);
+
+  const togglePool = useCallback((name) => {
+    setPoolSel((cur) => {
+      const n = cur.includes(name) ? cur.filter((x) => x !== name) : [...cur, name];
+      savePoolSel(n);
+      return n;
+    });
+  }, []);
+
+  /* ---- правила ---- */
+  const setDiscipline = (d) => setRules((r) => ({ d, p: { ...RULESETS[d].defaults }, notes: r.notes }));
+  const setRuleParam = (k, v) => setRules((r) => ({ ...r, p: { ...r.p, [k]: v } }));
+  const copyRules = () => {
+    const txt = rulesToText(rules, mapName, field);
+    if (navigator.clipboard) navigator.clipboard.writeText(txt).then(
+      () => setRulesNote("Текст правил скопирован — вставьте его в чат игрокам"),
+      () => setRulesNote("Браузер не дал скопировать. Скачайте правила файлом."));
+    else setRulesNote("Браузер не дал скопировать. Скачайте правила файлом.");
+  };
+  const downloadRules = () => {
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + rulesToText(rules, mapName, field)], { type: "text/plain;charset=utf-8" }));
+    const a = document.createElement("a"); a.href = url; a.download = `${(mapName || "cqb_selo").replace(/[^\wа-яА-Я\- ]+/g, "")} — правила.txt`; a.click();
+    URL.revokeObjectURL(url); setRulesNote("Правила сохранены файлом .txt");
+  };
 
   /* ---- ссылка для друзей ---- */
   const makeShareLink = useCallback(async () => {
@@ -1049,11 +1311,13 @@ export default function CQBSelo() {
       try {
         const d = JSON.parse(rd.result);
         pushHistory();
-        if (d.field) setField(d.field);
+        if (d.field) { fitNext.current = true; setField({ ...d.field }); }
         if (d.objects) setObjects(d.objects);
         if (d.zones) setZones(d.zones);
         if (d.price != null) setPrice(d.price);
         setBg(d.bg || null);
+        setRules(normRules(d.rules));
+        setMapName(d.name || f.name.replace(/\.json$/i, ""));
         setSelected(null); setSelZone(null); setStatus(`Загружено: ${f.name}`);
       } catch (err) { setStatus("Не удалось прочитать файл: он не похож на карту"); }
     };
@@ -1090,6 +1354,7 @@ export default function CQBSelo() {
     stats.rows.forEach((r) => lines.push([`Стена ${r.len} м`, r.n, r.tiers, r.per, r.total].join(";")));
     if (stats.colBales) lines.push(["Колонны", stats.columns.length, "", "", stats.colBales].join(";"));
     if (stats.stackBales) lines.push(["Штабели", stats.stacks.length, "", "", stats.stackBales].join(";"));
+    if (stats.rolls) lines.push(["Рулоны (отдельно, не в смете)", stats.rolls, "", "", ""].join(";"));
     lines.push(["ИТОГО", stats.walls.length, "", "", stats.totalBales].join(";"));
     lines.push(["Смета, руб", "", "", "", stats.totalBales * price].join(";"));
     const url = URL.createObjectURL(new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" }));
@@ -1097,11 +1362,11 @@ export default function CQBSelo() {
     URL.revokeObjectURL(url); setStatus("Расчёт выгружен в CSV");
   };
   const newMap = () => { pushHistory(); setObjects({}); setZones({}); setSelected(null); setSelZone(null); setStatus("Пустое поле. Выберите инструмент стены и рисуйте"); };
-  const resetMap = () => { pushHistory(); const s = buildSeed(); setObjects(s.objects); setZones(s.zones); setSelected(null); setSelZone(null); setStatus("Восстановлена планировка с референса"); };
+  const resetMap = () => { pushHistory(); const s = buildSeed(); setObjects(s.objects); setZones(s.zones); setRules(defaultRules("bomb")); setSelected(null); setSelZone(null); setStatus("Восстановлена планировка с референса"); };
 
   const sel = selected ? objects[selected] : null;
   const zsel = selZone ? zones[selZone] : null;
-  const updateSel = (patch) => { if (selected) setObjects((m) => ({ ...m, [selected]: { ...m[selected], ...patch } })); };
+  const updateSel = (patch) => { pushHistory(); if (selected) setObjects((m) => ({ ...m, [selected]: { ...m[selected], ...patch } })); };
   const updateZone = (id, patch) => setZones((m) => ({ ...m, [id]: { ...m[id], ...patch } }));
 
   const gridLines = useMemo(() => {
@@ -1118,7 +1383,7 @@ export default function CQBSelo() {
   };
 
   const TOOLS = [
-    ["select", "Выделить и двигать"], ["wallH", "Стена из тюков (Г)"], ["wallV", "Стена из тюков (В)"],
+    ["select", "Выделить и двигать"], ["wallFree", "Стена под любым углом"], ["wallH", "Стена из тюков (Г)"], ["wallV", "Стена из тюков (В)"],
     ["place", "Поставить объект"], ["pan", "Панорама"], ["zone", "Нарисовать зону"], ["delete", "Удалить"],
   ];
 
@@ -1126,7 +1391,7 @@ export default function CQBSelo() {
     { label: "Файл", items: [
       { label: "Новая карта", fn: newMap },
       { label: "Мои карты…", key: `${library.length}`, fn: () => { refreshLibrary(); setDialog("library"); } },
-      { label: "Общие карты с сайта…", fn: openShared },
+      { label: "Пул карт турнира…", fn: openShared },
       { label: "Сохранить в браузере", fn: () => saveToLibrary(mapName) },
       { label: "Ссылка для друзей…", fn: makeShareLink }, "-",
       { label: "Открыть файл карты…", fn: () => fileRef.current && fileRef.current.click() },
@@ -1141,6 +1406,7 @@ export default function CQBSelo() {
       { label: "Сбросить к референсу", fn: resetMap },
     ]},
     { label: "Карта", items: [
+      { label: "3D-просмотр", fn: () => setDialog("3d") },
       { label: "Вписать в экран", fn: fitView },
       { label: "Сетка", on: showGrid, fn: () => setShowGrid((g) => !g) },
       { label: "Размер поля и сетка…", fn: () => setDialog("field") }, "-",
@@ -1155,6 +1421,13 @@ export default function CQBSelo() {
       { label: `Смета: ${(stats.totalBales * price).toLocaleString("ru-RU")} ₽`, disabled: true }, "-",
       { label: "Цена тюка…", fn: () => setDialog("price") },
       { label: "Выгрузить расчёт в CSV", fn: exportCSV },
+    ]},
+    { label: "Турнир", items: [
+      { label: "Пул карт…", key: `${poolSel.length} в турнире`, fn: openShared },
+      { label: "Правила игры…", fn: () => setDialog("rules") },
+      { label: "Скопировать правила", fn: copyRules },
+      { label: "Сохранить правила", key: "TXT", fn: downloadRules }, "-",
+      ...RULE_KEYS.map((k) => ({ label: RULESETS[k].title, on: rules.d === k, fn: () => setDiscipline(k) })),
     ]},
     { label: "Справка", items: [
       { label: compact ? "Управление пальцами…" : "Горячие клавиши…", fn: () => setDialog("keys") },
@@ -1229,26 +1502,28 @@ export default function CQBSelo() {
             {Object.values(zones).filter((z) => !(ZONE_KINDS[z.k] && ZONE_KINDS[z.k].under)).map((z) => (
               <g key={z.id}>
                 <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={z.fill || ZONE_KINDS[z.k].fill} stroke={ZONE_KINDS[z.k].stroke} strokeWidth={0.08} opacity={0.95} />
-                <text x={z.x + z.w / 2} y={z.y + z.h / 2 + 0.6} textAnchor="middle" fontSize={1.8} fontWeight="bold" fill="#2B2B26" fontFamily="Tahoma, sans-serif" opacity={0.9}>{z.n}</text>
+                {(() => {
+                  /* узкую высокую зону (старт у стены) подписываем вдоль, и шрифт не шире самой зоны */
+                  const vert = z.h > z.w * 1.6;
+                  const along = vert ? z.h : z.w, across = vert ? z.w : z.h;
+                  const zf = Math.max(0.5, Math.min(1.8, across * 0.8, along / (Math.max(String(z.n).length, 1) * 0.68)));
+                  const cx = z.x + z.w / 2, cy = z.y + z.h / 2;
+                  return <text x={cx} y={cy + zf / 3} textAnchor="middle" fontSize={zf} fontWeight="bold" fill="#2B2B26" fontFamily="Tahoma, sans-serif" opacity={0.9}
+                    transform={vert ? `rotate(-90 ${cx} ${cy})` : undefined}>{z.n}</text>;
+                })()}
                 {selZone === z.id && <rect x={z.x} y={z.y} width={z.w} height={z.h} fill="none" stroke={C.sel} strokeWidth={0.2 * ss} strokeDasharray={`${0.8 * ss} ${0.5 * ss}`} />}
               </g>
             ))}
 
-            {Object.values(objects).filter((o) => o.t === "wallH" || o.t === "wallV").map((o) => <HayWall key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
-            {Object.values(objects).filter((o) => ASSETS[o.t] && (ASSETS[o.t].cat === "prop" || ASSETS[o.t].cat === "mark")).map((o) => <Prop key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
+            {Object.values(objects).filter((o) => o.t === "wallH" || o.t === "wallV").map((o) => <HayWall key={o.id} bale={bale} o={o} selected={o.id === selected} ss={ss} />)}
+            {Object.values(objects).filter((o) => ASSETS[o.t] && (ASSETS[o.t].cat === "prop" || ASSETS[o.t].cat === "mark")).map((o) => <Prop key={o.id} bale={bale} o={o} selected={o.id === selected} ss={ss} />)}
             {Object.values(objects).filter((o) => o.t === "figA" || o.t === "figB").map((o) => <Figure key={o.id} o={o} selected={o.id === selected} ss={ss} />)}
 
             <rect x={0} y={0} width={field.w} height={field.h} fill="none" stroke="#141412" strokeWidth={0.18} />
 
             {ghost && ghost.kind === "draw" && (() => {
-              const horiz = ghost.dir === "wallH";
-              const len = Math.abs(horiz ? ghost.x1 - ghost.x0 : ghost.y1 - ghost.y0);
-              const x = horiz ? Math.min(ghost.x0, ghost.x1) : ghost.x0;
-              const y = horiz ? ghost.y0 : Math.min(ghost.y0, ghost.y1);
-              return (<g>
-                <rect x={x} y={y} width={horiz ? len : BALE_T} height={horiz ? BALE_T : len} fill={C.hayFill} opacity={0.6} stroke={C.sel} strokeWidth={0.1} />
-                <text x={x + (horiz ? len / 2 : 1.4)} y={y - 0.4} fontSize={ghostFs} fill={C.sel} textAnchor="middle" fontFamily="Tahoma, sans-serif">{r1(len)} м · {baleCount(len, tiers)} тюк.</text>
-              </g>);
+              const o = drawnWall(ghost);
+              return <g opacity={0.65}><HayWall o={o} bale={bale} selected ss={ss}/><text x={o.x} y={o.y - 1.6 * ss} fontSize={ghostFs} fill={C.sel}>{Math.round(o.l / bale.l)} тюк. в ряд × {o.tiers} яр. = {baleCount(o.l,o.tiers)} тюк.</text></g>;
             })()}
             {ghost && ghost.kind === "zone" && (
               <rect x={Math.min(ghost.x0, ghost.x1)} y={Math.min(ghost.y0, ghost.y1)}
@@ -1289,11 +1564,17 @@ export default function CQBSelo() {
   );
 
   const buildInner = (<>
+              <ChromeButton onClick={() => {setSheet(null);setDialog("3d");}}>3D-просмотр</ChromeButton>
+              <div style={{fontWeight:"bold"}}>Размер тюка, м</div>
+              {[["l","Длина"],["t","Ширина"],["h","Высота"]].map(([k,label]) => <Row key={k} label={label}><NumIn value={bale[k]} min={0.1} max={20} step={0.1} onChange={v => {pushHistory();setField(f=>({...f,bale:{...normBale(f.bale),[k]:v}}));}}/></Row>)}
+              <div style={{fontSize:fs(10),opacity:0.75}}>Применяется ко всем тюкам карты. Высота по умолчанию 0,8 м — замените после замера.</div>
               <Row label="Ширина, м"><NumIn value={field.w} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, w: v }))} /></Row>
               <Row label="Длина, м"><NumIn value={field.h} min={5} max={1000} step={1} onChange={(v) => setField((f) => ({ ...f, h: v }))} /></Row>
               <Row label="Сетка, м"><Select value={field.grid} onChange={(v) => setField((f) => ({ ...f, grid: +v }))} options={[[1, "1"], [2, "2"], [2.5, "2.5"], [5, "5"], [10, "10"], [20, "20"], [25, "25"], [50, "50"]]} /></Row>
-              <Row label="Привязка"><Select value={snap} onChange={(v) => setSnap(+v)} options={[[0.1, "0.1 м"], [0.5, "0.5 м"], [1, "1 м"], [2, "2 м"]]} /></Row>
-              <Row label="Ярусов"><Select value={tiers} onChange={(v) => setTiers(+v)} options={[[1, "1 (0.8 м)"], [2, "2 (1.6 м)"], [3, "3 (2.4 м)"]]} /></Row>
+              <Row label="Привязка"><Select value={snap} onChange={(v) => setSnap(+v)} options={[[0, "Нет"], [0.1, "0.1 м"], [0.5, "0.5 м"], [1, "1 м"], [2, "2 м"]]} /></Row>
+              <div style={{fontWeight:"bold"}}>Новая стена</div>
+              <Row label="Ярусов новой стены"><Select value={tiers} onChange={(v) => setTiers(+v)} options={[1,2,3,4,5,6].map(n=>[n,`${n} (${r1(n*bale.h)} м)`])} /></Row>
+              <div style={{fontSize:fs(10),opacity:0.8}}>Шаг длины — 1 тюк ({bale.l} м). Новые стены: {tiers} яр., высота {r1(tiers*bale.h)} м.</div>
               <Check checked={showGrid} onChange={setShowGrid}>Сетка</Check>
   </>);
 
@@ -1330,7 +1611,7 @@ export default function CQBSelo() {
   const assetGrid = (cols) => (
           <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: compact ? 6 : 4, padding: compact ? 0 : 5 }}>
             {Object.keys(ASSETS).map((k) => {
-              const isTool = k === "wallH" || k === "wallV";
+              const isTool = ASSETS[k].cat === "wall";
               const active = isTool ? tool === k : tool === "place" && asset === k;
               return (
                 <button key={k} type="button" title={ASSETS[k].name}
@@ -1353,10 +1634,11 @@ export default function CQBSelo() {
   const propsInner = (
             sel ? (<>
               <Row label="Объект"><Static>{(ASSETS[sel.t] && ASSETS[sel.t].name) || sel.t}</Static></Row>
-              <Row label="X, м"><NumIn value={sel.x} step={snap} onChange={(v) => updateSel({ x: v })} /></Row>
-              <Row label="Y, м"><NumIn value={sel.y} step={snap} onChange={(v) => updateSel({ y: v })} /></Row>
-              {sel.l != null && <Row label="Длина, м"><NumIn value={sel.l} min={0.5} step={snap} onChange={(v) => updateSel({ l: v })} /></Row>}
-              {sel.tiers != null && <Row label="Ярусов"><Select value={sel.tiers} onChange={(v) => updateSel({ tiers: +v })} options={[[1, "1"], [2, "2"], [3, "3"]]} /></Row>}
+              <Row label="X, м"><NumIn value={sel.x} step={snap || 0.1} onChange={(v) => updateSel({ x: v })} /></Row>
+              <Row label="Поворот, °"><NumIn value={sel.rot || 0} min={-360} max={360} step={1} onChange={v => updateSel({rot:v})}/></Row>
+              <Row label="Y, м"><NumIn value={sel.y} step={snap || 0.1} onChange={(v) => updateSel({ y: v })} /></Row>
+              {sel.l != null && <Row label="Длина, м"><NumIn value={sel.l} min={0.5} step={snap || 0.1} onChange={(v) => updateSel({ l: v })} /></Row>}
+              {sel.tiers != null && <Row label="Ярусов"><Select value={sel.tiers} onChange={(v) => updateSel({ tiers: +v })} options={[1,2,3,4,5,6].map(n=>[n,String(n)])} /></Row>}
               {sel.l != null && <Row label="Тюков"><Static>{baleCount(sel.l, sel.tiers)}</Static></Row>}
               <ChromeButton onClick={deleteSelected}>Удалить объект</ChromeButton>
             </>) : zsel ? (<>
@@ -1374,10 +1656,10 @@ export default function CQBSelo() {
                     style={{ width: compact ? 96 : 66, height: compact ? 36 : 22, padding: 0, border: "1px solid #9A9684" }} />
                 </Row>
               )}
-              <Row label="X, м"><NumIn value={zsel.x} step={snap} onChange={(v) => updateZone(zsel.id, { x: v })} /></Row>
-              <Row label="Y, м"><NumIn value={zsel.y} step={snap} onChange={(v) => updateZone(zsel.id, { y: v })} /></Row>
-              <Row label="Ширина, м"><NumIn value={zsel.w} min={0.5} step={snap} onChange={(v) => updateZone(zsel.id, { w: v })} /></Row>
-              <Row label="Высота, м"><NumIn value={zsel.h} min={0.5} step={snap} onChange={(v) => updateZone(zsel.id, { h: v })} /></Row>
+              <Row label="X, м"><NumIn value={zsel.x} step={snap || 0.1} onChange={(v) => updateZone(zsel.id, { x: v })} /></Row>
+              <Row label="Y, м"><NumIn value={zsel.y} step={snap || 0.1} onChange={(v) => updateZone(zsel.id, { y: v })} /></Row>
+              <Row label="Ширина, м"><NumIn value={zsel.w} min={0.5} step={snap || 0.1} onChange={(v) => updateZone(zsel.id, { w: v })} /></Row>
+              <Row label="Высота, м"><NumIn value={zsel.h} min={0.5} step={snap || 0.1} onChange={(v) => updateZone(zsel.id, { h: v })} /></Row>
               <ChromeButton onClick={deleteSelected}>Удалить зону</ChromeButton>
             </>) : (
               <div style={{ fontSize: fs(11), opacity: 0.7 }}>{compact ? "Ничего не выбрано. Возьмите «Выбор» и коснитесь объекта или зоны на карте." : "Ничего не выбрано. Возьмите «Выделить и двигать» и щёлкните по объекту или зоне."}</div>
@@ -1394,8 +1676,73 @@ export default function CQBSelo() {
             <LegendRow label="Поддон / ящик"><svg width="34" height="16" viewBox="0 0 34 16"><rect x="5" y="2" width="24" height="12" fill={C.wood} stroke="#5C3E1B" /><path d="M5 6h24M5 10h24" stroke={C.woodLine} /></svg></LegendRow>
             <LegendRow label="Покрышки"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="6.5" fill={C.rubber} /><circle cx="17" cy="8" r="2.6" fill="#70707A" /></svg></LegendRow>
             <LegendRow label="Бочка"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="6" fill={C.steel} stroke="#111" /><circle cx="17" cy="8" r="3" fill="none" stroke="#93939A" /></svg></LegendRow>
+            <LegendRow label="Рулон сена, Ø 1.6 м"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="7" fill={C.hayFill} stroke={C.hayEdge} /><circle cx="17" cy="8" r="3.5" fill="none" stroke={C.hayLine} /></svg></LegendRow>
+            <LegendRow label="Флаг (старт раунда)"><svg width="34" height="16" viewBox="0 0 34 16"><path d="M13 15V2" stroke="#111" strokeWidth="1.6" /><path d="M13 2l10 3.5L13 9z" fill={C.flag} stroke="#111" /></svg></LegendRow>
+            <LegendRow label="Огонь — точка захвата"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="8" r="4.5" fill={C.light} stroke="#111" /><path d="M17 0.5v2M17 13.5v2M9.5 8h2M22.5 8h2" stroke="#111" /></svg></LegendRow>
             <LegendRow label="Игрок, 1.8 м"><svg width="34" height="16" viewBox="0 0 34 16"><circle cx="17" cy="5" r="3" fill={C.teamA} stroke="#111" /><path d="M17 8c-3.4 0-5 2.4-5 5.5h10C22 10.4 20.4 8 17 8z" fill={C.teamA} stroke="#111" /></svg></LegendRow>
   </>);
+
+  /* ---- правила: один и тот же блок для окна, листа на телефоне и панели ---- */
+  const rs = RULESETS[rules.d];
+  const secTitle = (t) => <div style={{ font: `bold ${fs(11)}px Tahoma, sans-serif`, letterSpacing: ".06em", marginTop: 4, color: "#46523F" }}>{t}</div>;
+  const bullets = (arr) => (
+    <ul style={{ margin: 0, paddingLeft: 18, display: "grid", gap: 3, fontSize: fs(12), lineHeight: 1.45 }}>
+      {arr.map((t, i) => <li key={i}>{t}</li>)}
+    </ul>
+  );
+  const pairTable = (arr) => (
+    <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif`, background: "#fff", border: `1px solid ${C.chromeDk}` }}>
+      <tbody>{arr.map(([a, b], i) => (
+        <tr key={i} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}><Td>{a}</Td><Td right><b>{b}</b></Td></tr>
+      ))}</tbody>
+    </table>
+  );
+  const rulesInner = (full) => (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+        {RULE_KEYS.map((k) => (
+          <button key={k} type="button" onClick={() => setDiscipline(k)} aria-pressed={rules.d === k}
+            style={{
+              padding: compact ? "8px 10px" : "3px 8px", cursor: "pointer", touchAction: "manipulation",
+              font: `${fs(11.5)}px Tahoma, sans-serif`, color: C.ink, background: rules.d === k ? "#C0CBE0" : "#F2F0E8",
+              border: rules.d === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`,
+            }}>{RULESETS[k].short}</button>
+        ))}
+      </div>
+      <div style={{ font: `bold ${fs(14)}px Tahoma, sans-serif` }}>{rs.title}</div>
+      <div style={{ fontSize: fs(11), opacity: 0.75 }}>Основа: {rs.src}</div>
+      <div style={{ display: "grid", gridTemplateColumns: full && !compact ? "1fr 1fr" : "1fr", gap: compact ? 8 : "4px 18px" }}>
+        <Row label="Игроков в команде"><NumIn value={rules.p.players} min={1} max={20} onChange={(v) => setRuleParam("players", v)} /></Row>
+        <Row label="Запасных"><NumIn value={rules.p.subs} min={0} max={20} onChange={(v) => setRuleParam("subs", v)} /></Row>
+        <Row label="Раунд, мин"><NumIn value={rules.p.roundMin} min={0.5} max={60} step={0.5} onChange={(v) => setRuleParam("roundMin", v)} /></Row>
+        <Row label="Между раундами, с"><NumIn value={rules.p.breakSec} min={0} max={900} step={10} onChange={(v) => setRuleParam("breakSec", v)} /></Row>
+        <Row label="Раундов в матче"><NumIn value={rules.p.rounds} min={1} max={20} onChange={(v) => setRuleParam("rounds", v)} /></Row>
+        <Row label="Лимит, Дж"><NumIn value={rules.p.joule} min={0.1} max={3} step={0.1} onChange={(v) => setRuleParam("joule", v)} /></Row>
+      </div>
+      <Row label="Система">
+        <input value={rules.p.system} onChange={(e) => setRuleParam("system", e.target.value)} placeholder="Например: круговая, 2 раунда"
+          style={{ flex: 1, minWidth: 0, marginLeft: 8, background: "#fff", border: "1px solid #9A9684", padding: compact ? "6px 8px" : "2px 5px", font: `${compact ? 16 : 11.5}px Tahoma, sans-serif` }} />
+      </Row>
+      {full && (<>
+        {rs.goal.length > 0 && (<>{secTitle("ЦЕЛЬ")}{bullets(rs.goal)}</>)}
+        {rs.start.length > 0 && (<>{secTitle("СТАРТ")}{bullets(rs.start)}</>)}
+        {rs.score.length > 0 && (<>{secTitle("ОЧКИ")}{pairTable(rs.score)}{rs.scoreNote && <div style={{ fontSize: fs(11.5), opacity: 0.8 }}>{rs.scoreNote}</div>}</>)}
+        {secTitle("ПОРАЖЕНИЕ")}{bullets(rs.hits)}
+        {rs.penalties.length > 0 && (<>{secTitle("ШТРАФЫ")}{pairTable(rs.penalties)}</>)}
+        {secTitle("ДОПУСК")}{bullets(rs.gear)}
+      </>)}
+      {secTitle("СВОИ ПРАВИЛА ЭТОЙ КАРТЫ")}
+      <textarea value={rules.notes} onChange={(e) => setRules((r) => ({ ...r, notes: e.target.value }))} rows={full ? 5 : 4}
+        placeholder="Что особенного на этой карте: где стоит флаг, что считается стартом, свои запреты…"
+        style={{ width: "100%", background: "#fff", border: "1px solid #9A9684", padding: 6, font: `${compact ? 16 : 12}px Tahoma, sans-serif`, resize: "vertical" }} />
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        {!full && <ChromeButton onClick={() => setDialog("rules")}>Все правила…</ChromeButton>}
+        <ChromeButton onClick={copyRules}>Скопировать текст</ChromeButton>
+        <ChromeButton onClick={downloadRules}>Сохранить .txt</ChromeButton>
+        {rulesNote && <span style={{ fontSize: fs(11), opacity: 0.8 }}>{rulesNote}</span>}
+      </div>
+    </div>
+  );
 
   const baleTable = (
             <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
@@ -1419,6 +1766,7 @@ export default function CQBSelo() {
 
   const dialogs = (<>
       {/* ДИАЛОГИ */}
+      {dialog === "3d" && <Modal title="3D-просмотр · человек 1,80 м" width={1000} onClose={()=>setDialog(null)}><Preview3D objects={objects} zones={zones} field={field} bale={bale}/></Modal>}
       {pending && (
         <Modal title="Новая зона" onClose={() => setPending(null)}>
           <div style={{ display: "grid", gap: 8 }}>
@@ -1510,41 +1858,82 @@ export default function CQBSelo() {
         </Modal>
       )}
 
-      {dialog === "shared" && (
-        <Modal title="Общие карты с сайта" onClose={() => setDialog(null)} width={490}>
-          <div style={{ display: "grid", gap: 9 }}>
-            {shared.state === "loading" && <div style={{ fontSize: fs(12) }}>Читаю папку maps…</div>}
-            {shared.state === "err" && (
-              <div style={{ fontSize: fs(11.5), lineHeight: 1.6 }}>
-                Список не загрузился: {shared.err}.<br />
-                Такое бывает, если приложение открыто файлом с диска, а не по ссылке сайта,
-                либо папки maps в репозитории ещё нет.
+      {dialog === "shared" && (() => {
+        const all = shared.list;
+        const counts = {};
+        all.forEach((m) => { if (m.d) counts[m.d] = (counts[m.d] || 0) + 1; });
+        const picked = poolSel.filter((n) => all.some((m) => m.name === n)).length;
+        const list = all.filter((m) => (poolFilter === "all" || m.d === poolFilter) && (!poolOnly || poolSel.includes(m.name)));
+        const chipBtn = (k, label) => (
+          <button key={k} type="button" onClick={() => setPoolFilter(k)} aria-pressed={poolFilter === k}
+            style={{
+              padding: compact ? "7px 10px" : "2px 8px", cursor: "pointer", touchAction: "manipulation", color: C.ink,
+              font: `${fs(11.5)}px Tahoma, sans-serif`, background: poolFilter === k ? "#C0CBE0" : "#F2F0E8",
+              border: poolFilter === k ? `2px solid ${C.sel}` : `2px solid ${C.chromeDk}`,
+            }}>{label}</button>
+        );
+        return (
+          <Modal title="Пул карт турнира" onClose={() => setDialog(null)} width={620}>
+            <div style={{ display: "grid", gap: 9 }}>
+              {shared.state === "loading" && <div style={{ fontSize: fs(12) }}>Читаю папку maps…</div>}
+              {shared.state === "err" && (
+                <div style={{ fontSize: fs(11.5), lineHeight: 1.6 }}>
+                  Список не загрузился: {shared.err}.<br />
+                  Такое бывает, если приложение открыто файлом с диска, а не по ссылке сайта,
+                  либо папки maps в репозитории ещё нет.
+                </div>
+              )}
+              {shared.state === "ok" && all.length === 0 && (
+                <div style={{ fontSize: fs(11.5) }}>Папка maps пустая. Положите туда файлы карт .json.</div>
+              )}
+              {shared.state === "ok" && all.length > 0 && (<>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {chipBtn("all", `Все · ${all.length}`)}
+                  {RULE_KEYS.filter((k) => counts[k]).map((k) => chipBtn(k, `${RULESETS[k].short} · ${counts[k]}`))}
+                </div>
+                <Check checked={poolOnly} onChange={setPoolOnly}>Только отобранные в турнир ({picked})</Check>
+                <div style={{ maxHeight: compact ? "none" : 360, overflowY: compact ? "visible" : "auto", display: "grid", gap: 6 }}>
+                  {list.map((m) => {
+                    const on = poolSel.includes(m.name);
+                    return (
+                      <Bevel key={m.url} out={false} style={{ background: on ? "#EEF3E6" : "#fff", padding: 8, display: "grid", gap: 5 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                          <b style={{ fontSize: fs(13), overflowWrap: "anywhere" }}>{m.title || m.name}</b>
+                          <span style={{ fontSize: fs(11), opacity: 0.75 }}>
+                            {m.bad ? "файл не прочитался" : m.d ? `${RULESETS[m.d].short}${m.field ? ` · поле ${m.field.w} × ${m.field.h} м` : ""}` : "читаю…"}
+                          </span>
+                        </div>
+                        {m.line && <div style={{ fontSize: fs(11), opacity: 0.8 }}>{m.line}{m.author ? ` · ${m.author}` : ""}</div>}
+                        {m.note && <div style={{ fontSize: fs(11.5), lineHeight: 1.45, whiteSpace: "pre-wrap" }}>{m.note}</div>}
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                          <Check checked={on} onChange={() => togglePool(m.name)}>В турнире</Check>
+                          <span style={{ flex: 1 }} />
+                          <ChromeButton disabled={!!m.bad} onClick={() => loadShared(m, true)}>Открыть с правилами</ChromeButton>
+                          <ChromeButton disabled={!!m.bad} onClick={() => loadShared(m)}>Открыть</ChromeButton>
+                        </div>
+                      </Bevel>
+                    );
+                  })}
+                  {list.length === 0 && <div style={{ fontSize: fs(11.5), opacity: 0.8 }}>По этому фильтру карт нет.</div>}
+                </div>
+              </>)}
+              {shared.state === "ok" && shared.err && <div style={{ fontSize: fs(11.5), color: "#9A2A2A" }}>{shared.err}</div>}
+              <div style={{ fontSize: fs(11), opacity: 0.8, lineHeight: 1.5 }}>
+                Пул — это папка <b>maps</b> в репозитории сайта. Чтобы добавить карту: нарисуйте её, задайте правила,
+                сохраните {compact ? "«Меню → Сохранить файлом»" : "«Файл → Сохранить файлом»"} и загрузите .json в папку maps на GitHub.
+                Отметка «В турнире» хранится в этом браузере.
               </div>
-            )}
-            {shared.state === "ok" && shared.list.length === 0 && (
-              <div style={{ fontSize: fs(11.5) }}>Папка maps пустая. Положите туда файлы карт .json.</div>
-            )}
-            {shared.state === "ok" && shared.list.length > 0 && (
-              <div style={{ maxHeight: 300, overflowY: "auto", border: `1px solid ${C.chromeLo}`, background: "#fff" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", font: `${fs(11.5)}px Tahoma, sans-serif` }}>
-                  <tbody>
-                    {shared.list.map((m, i) => (
-                      <tr key={m.url} style={{ background: i % 2 ? "#F7F6F1" : "#fff" }}>
-                        <Td>{m.name}{m.author ? <span style={{ opacity: 0.6 }}> · {m.author}</span> : null}</Td>
-                        <Td right>{m.size ? Math.round(m.size / 1024) + " КБ" : ""}</Td>
-                        <Td right><ChromeButton style={{ padding: "1px 7px" }} onClick={() => loadShared(m)}>Открыть</ChromeButton></Td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <ChromeButton onClick={openShared}>Обновить</ChromeButton>
               </div>
-            )}
-            {shared.state === "ok" && shared.err && <div style={{ fontSize: fs(11.5), color: "#9A2A2A" }}>{shared.err}</div>}
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: fs(11), opacity: 0.75 }}>Карты лежат в папке maps репозитория сайта.</span>
-              <ChromeButton onClick={openShared}>Обновить</ChromeButton>
             </div>
-          </div>
+          </Modal>
+        );
+      })()}
+
+      {dialog === "rules" && (
+        <Modal title={`Правила игры · ${mapName}`} onClose={() => { setDialog(null); setRulesNote(""); }} width={660}>
+          {rulesInner(true)}
         </Modal>
       )}
 
@@ -1655,7 +2044,7 @@ export default function CQBSelo() {
             <Row label="Цена одного тюка, ₽"><NumIn value={price} min={0} step={10} onChange={setPrice} width={90} /></Row>
             <div>Тюков в проекте: <b>{stats.totalBales}</b></div>
             <div>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></div>
-            <div style={{ fontSize: fs(11), opacity: 0.75 }}>Цена относится к тюку {BALE_L} × {BALE_T} м. Поддоны, покрышки и бочки в смету не входят — их количество показано под таблицей.</div>
+            <div style={{ fontSize: fs(11), opacity: 0.75 }}>Цена относится к тюку {bale.l} × {bale.t} × {bale.h} м. Поддоны, покрышки и бочки в смету не входят — их количество показано под таблицей.</div>
             <div style={{ display: "flex", justifyContent: "flex-end" }}><ChromeButton onClick={() => setDialog(null)}>Готово</ChromeButton></div>
           </div>
         </Modal>
@@ -1697,9 +2086,9 @@ export default function CQBSelo() {
       {dialog === "about" && (
         <Modal title="О программе" onClose={() => setDialog(null)} width={380}>
           <div style={{ fontSize: fs(12), display: "grid", gap: 7 }}>
-            <div style={{ font: `bold ${fs(16)}px Tahoma, sans-serif` }}>CQB СЕЛО · планировщик поля v1.3</div>
+            <div style={{ font: `bold ${fs(16)}px Tahoma, sans-serif` }}>CQB СЕЛО · планировщик поля v1.4</div>
             <div>Планировка CQB-полигона из тюков сена с расчётом количества тюков и сметы.</div>
-            <div>Тюк {BALE_L} × {BALE_T} м. Все координаты в метрах, сетка метрическая.</div>
+            <div>Тюк {bale.l} × {bale.t} × {bale.h} м. Все координаты в метрах, сетка метрическая.</div>
             <div>Поле до 1000 м. Подложка тянется без верхнего предела и крутится на любой угол 0…360°.</div>
             <div style={{ opacity: 0.75 }}>Карты сохраняются в JSON на ваш компьютер. Ничего никуда не отправляется, работает без интернета.</div>
             <div style={{ opacity: 0.75 }}>На телефоне панели открываются кнопками внизу экрана, карта двигается и масштабируется пальцами.</div>
@@ -1760,8 +2149,8 @@ export default function CQBSelo() {
     const low = vp.h < 430;
     const barH = low ? 46 : 54;
     const SHORT = { select: "Выбор", wallH: "Стена Г", wallV: "Стена В", place: "Объект", pan: narrow ? "Сдвиг" : "Панорама", zone: "Зона", delete: "Удалить" };
-    const SHEETS = [["objects", "Объекты"], ["props", "Свойства"], ["field", "Поле"], ["calc", "Расчёт"], ["zones", "Зоны"]];
-    const SHEET_TITLE = { objects: "Библиотека объектов", props: "Свойства", field: "Поле и подложка", calc: "Расчёт тюков и смета", zones: "Зоны и счёт" };
+    const SHEETS = [["objects", "Объекты"], ["props", "Свойства"], ["field", "Поле"], ["calc", "Расчёт"], ["zones", "Зоны"], ["rules", "Правила"]];
+    const SHEET_TITLE = { objects: "Библиотека объектов", props: "Свойства", field: "Поле и подложка", calc: "Расчёт тюков и смета", zones: "Зоны и счёт", rules: `Правила · ${mapName}` };
     const bevelBtn = (on) => ({
       borderTop: `2px solid ${on ? C.chromeLo : C.chromeHi}`, borderLeft: `2px solid ${on ? C.chromeLo : C.chromeHi}`,
       borderBottom: `2px solid ${on ? C.chromeHi : C.chromeLo}`, borderRight: `2px solid ${on ? C.chromeHi : C.chromeLo}`,
@@ -1779,11 +2168,12 @@ export default function CQBSelo() {
 
     let hint = "";
     if (ghost && ghost.kind === "draw") {
-      const len = Math.abs(ghost.dir === "wallH" ? ghost.x1 - ghost.x0 : ghost.y1 - ghost.y0);
+      const len = drawnWall(ghost).l;
       hint = `Стена ${r1(len)} м · ${baleCount(len, tiers)} тюк.`;
     } else if (ghost && ghost.kind === "zone") {
       hint = `Зона ${r1(Math.abs(ghost.x1 - ghost.x0))} × ${r1(Math.abs(ghost.y1 - ghost.y0))} м`;
-    } else if (tool === "wallH") hint = "Проведите пальцем по карте — горизонтальная стена";
+    } else if (tool === "wallFree") hint = "Проведите стену в любом направлении";
+    else if (tool === "wallH") hint = "Проведите пальцем по карте — горизонтальная стена";
     else if (tool === "wallV") hint = "Проведите пальцем по карте — вертикальная стена";
     else if (tool === "place") hint = `Коснитесь карты — поставить «${ASSETS[asset].name}»`;
     else if (tool === "zone") hint = `Протяните рамку: ${ZONE_KINDS[zoneKind].label}`;
@@ -1835,10 +2225,12 @@ export default function CQBSelo() {
         </div>
         <Bevel out={false} style={{ background: "#fff", overflowX: "auto" }}>{baleTable}</Bevel>
         <div style={{ fontSize: 13, opacity: 0.75 }}>
-          Тюк {BALE_L} × {BALE_T} м. Поддонов {stats.crates}, покрышек {stats.tires}, бочек {stats.barrels} — в смету не входят.
+          Тюк {bale.l} × {bale.t} × {bale.h} м. Поддонов {stats.crates}, покрышек {stats.tires}, бочек {stats.barrels}, рулонов {stats.rolls} — в смету не входят.
         </div>
         <ChromeButton onClick={exportCSV}>Выгрузить расчёт в CSV</ChromeButton>
       </div>
+    ) : sheet === "rules" ? (
+      rulesInner(true)
     ) : sheet === "zones" ? (
       <div style={{ display: "grid", gap: 7 }}>
         {Object.values(zones).length === 0 && (
@@ -1899,7 +2291,7 @@ export default function CQBSelo() {
         onClick={() => toggleSheet(k)}
         style={{
           flex: oneRow ? "1 0 70px" : 1, minWidth: 0, height: oneRow ? barH : 42, padding: narrow ? 0 : "0 2px", cursor: "pointer", touchAction: "manipulation",
-          background: sheet === k ? "#C4BFAE" : C.chrome, color: C.ink, font: `${narrow ? 11.5 : 13}px Tahoma, sans-serif`, whiteSpace: "nowrap",
+          background: sheet === k ? "#C4BFAE" : C.chrome, color: C.ink, font: `${narrow ? 10.5 : oneRow ? 13 : 12}px Tahoma, sans-serif`, whiteSpace: "nowrap",
           overflow: "hidden", textOverflow: "ellipsis", ...bevelBtn(sheet === k),
         }}>
         {label}{k === "props" && (sel || zsel) ? " •" : ""}
@@ -2040,7 +2432,8 @@ export default function CQBSelo() {
             <ChromeButton onClick={() => fileRef.current && fileRef.current.click()}>Файл</ChromeButton>
             <ChromeButton onClick={() => saveToLibrary(mapName)}>Сохранить</ChromeButton>
             <ChromeButton onClick={() => { refreshLibrary(); setDialog("library"); }}>Мои карты</ChromeButton>
-            <ChromeButton onClick={openShared}>Общие</ChromeButton>
+            <ChromeButton onClick={openShared}>Пул карт</ChromeButton>
+            <ChromeButton onClick={() => setDialog("rules")}>Правила</ChromeButton>
             <ChromeButton onClick={makeShareLink}>Ссылка</ChromeButton>
             <ChromeButton onClick={() => imgRef.current && imgRef.current.click()}>Подложка</ChromeButton>
             <ChromeButton onClick={undo} disabled={!history.length}>Отменить</ChromeButton>
@@ -2059,7 +2452,7 @@ export default function CQBSelo() {
           </svg>
           <div style={{ lineHeight: 1.05 }}>
             <div style={{ font: `bold ${fs(20)}px Tahoma, sans-serif`, letterSpacing: ".03em" }}>CQB СЕЛО</div>
-            <div style={{ font: `${fs(10)}px Tahoma, sans-serif`, opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.3</div>
+            <div style={{ font: `${fs(10)}px Tahoma, sans-serif`, opacity: 0.75, letterSpacing: ".16em" }}>ПЛАНИРОВЩИК ПОЛЯ v1.4</div>
           </div>
         </div>
       </div>
@@ -2140,6 +2533,14 @@ export default function CQBSelo() {
             {propsInner}
           </Bevel>
 
+          <PanelTitle>ПРАВИЛА ИГРЫ</PanelTitle>
+          <Bevel out={false} style={{ margin: 5, padding: 7, background: "#E6E3D8", display: "grid", gap: 5 }}>
+            <div style={{ font: `bold ${fs(12)}px Tahoma, sans-serif` }}>{rs.title}</div>
+            <div style={{ fontSize: fs(11) }}>{rulesLine(rules)}</div>
+            {rules.notes && <div style={{ fontSize: fs(10.5), opacity: 0.8, whiteSpace: "pre-wrap", maxHeight: 64, overflow: "hidden" }}>{rules.notes}</div>}
+            <ChromeButton onClick={() => setDialog("rules")}>Правила игры…</ChromeButton>
+          </Bevel>
+
           <PanelTitle>ЛЕГЕНДА</PanelTitle>
           <Bevel out={false} style={{ margin: 5, padding: 7, background: "#FFFFFF", display: "grid", gap: 5 }}>
             {legendInner}
@@ -2150,6 +2551,7 @@ export default function CQBSelo() {
       {/* СТАТУС */}
       <div style={{ display: "flex", borderTop: `2px solid ${C.chromeHi}`, borderBottom: `2px solid ${C.chromeLo}` }}>
         <StatusCell w={168}>Карта: <b>{mapName}</b></StatusCell>
+        <StatusCell w={112}>{rs.short}</StatusCell>
         <StatusCell w={160}>Курсор: {r1(mouse.x)} ; {r1(mouse.y)} м</StatusCell>
         <StatusCell w={120}>1 : {Math.round(view.mpp * 1000)}</StatusCell>
         <StatusCell flex>
@@ -2172,7 +2574,7 @@ export default function CQBSelo() {
       }}>
         <Bevel out={false} style={{ background: "#FFFFFF", minWidth: 400, flex: "1 1 400px", display: "flex", flexDirection: "column", minHeight: 0 }}>
           <div style={{ background: C.chromeDk, font: `bold ${fs(11)}px Tahoma, sans-serif`, padding: "4px 8px", letterSpacing: ".05em" }}>
-            РАСЧЁТ КОЛИЧЕСТВА ТЮКОВ · размер тюка {BALE_L} × {BALE_T} м
+            РАСЧЁТ КОЛИЧЕСТВА ТЮКОВ · размер тюка {bale.l} × {bale.t} × {bale.h} м
           </div>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
             {baleTable}
@@ -2181,7 +2583,7 @@ export default function CQBSelo() {
             <span style={{ fontSize: fs(11.5) }}>Цена тюка, ₽</span>
             <NumIn value={price} min={0} step={10} onChange={setPrice} width={70} />
             <span style={{ fontSize: fs(11.5) }}>Смета: <b>{(stats.totalBales * price).toLocaleString("ru-RU")} ₽</b></span>
-            <span style={{ fontSize: fs(10.5), opacity: 0.7 }}>Поддонов {stats.crates} · покрышек {stats.tires} · бочек {stats.barrels}</span>
+            <span style={{ fontSize: fs(10.5), opacity: 0.7 }}>Поддонов {stats.crates} · покрышек {stats.tires} · бочек {stats.barrels} · рулонов {stats.rolls}</span>
           </div>
         </Bevel>
 
